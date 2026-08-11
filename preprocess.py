@@ -74,6 +74,7 @@ def _auto_ica(sub, config, tsss_causal, ica):
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
     ica_apply.save(f"{config.megdir}/{sub}/{sub}_tsss-1-45-causal-resting-{config.session}-ica-apply-raw.fif", overwrite=config.overwrite)
     ica.save(f"{config.megdir}/{sub}/{sub}_tsss-1-45-causal-resting-{config.session}-apply-comp-ica.fif", overwrite=config.overwrite)
+    print(type(ica_apply))
     return ica_apply
 
 
@@ -97,7 +98,7 @@ def filter_empty(sub, config, verbose=False):
     noisy_ch, flat_ch = mne.preprocessing.find_bad_channels_maxwell(raw_empty, coord_frame='meg', ignore_ref=True, verbose=verbose)
     raw_empty.info['bads'] += noisy_ch + flat_ch
     if config.meg_sys=='MEGIN':
-        raw = mne.io.load_raw_fiif(f"{config.megdir}/{sub}/{sub}_resting_{config.session}-raw.fif", preload=False)
+        raw = mne.io.read_raw_fif(f"{config.megdir}/{sub}/{sub}_resting_{config.session}-raw.fif", preload=False)
         raw_empty.info['dev_head_t'] = raw.info['dev_head_t'] # Causes Null Space malalignment if not present for covariance
     empty_tsss = mne.preprocessing.maxwell_filter(raw_empty, st_duration=10, ignore_ref=True, st_correlation=0.9, st_only=st_only, bad_condition='warning', coord_frame='head', verbose=verbose)
     empty_causal = empty_tsss.filter(l_freq=1, h_freq=45, picks='meg', phase='minimum', verbose=verbose)
@@ -115,11 +116,11 @@ def make_src(sub, config, space, verbose=False):
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     if (ica_apply==None):
-        assert pathlib.Path(f"{config.megdir}/{sub}/{sub}_tsss-1-45-causal-resting_{config.session}-ica-apply-raw.fif").exists(), "ica_apply does not exist in memory. Please either pass a valid instance of applied ica to raw data, or run apply_ica()"
+        assert pathlib.Path(f"{config.megdir}/{sub}/{sub}_tsss-1-45-causal-resting-{config.session}-ica-apply-raw.fif").exists(), "ica_apply does not exist in memory. Please either pass a valid instance of applied ica to raw data, or run apply_ica()"
         ica_apply = mne.io.read_raw_fif(f"{config.megdir}/{sub}/{sub}_tsss-1-45-causal-resting-{config.session}-ica-apply-raw.fif")
     assert config.megdir != None, "MEG directory has not been initialized in pipeline_config!"
     print("Making epochs...")
-    ica_apply = ica_apply.crop(tmin=config.buffer + trial * config.duration, tmax=config.buffer + (trial + 1) * config.duration)
+    ica_apply = ica_apply.crop(tmin=config.buffer + trial * config.epoch_duration, tmax=config.buffer + (trial + 1) * config.epoch_duration)
     epochs = mne.make_fixed_length_epochs(ica_apply, duration=config.epoch_duration, reject_by_annotation=False, preload=True, verbose=verbose)
     print(epochs)
     print(type(epochs))
@@ -128,7 +129,7 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     evoked = epochs.average()
     # print(evoked_data.nave)
     evoked = evoked.filter(l_freq=13, h_freq=25, phase='minimum')
-    evoked.save(fname=f"{config.megdir}/{sub}/{sub}_{config.session}-[trial:{trial}]-evoked-ave.fif", overwrite=config.overwrite)
+    evoked.save(fname=f"{config.megdir}/{sub}/{sub}_{config.session}-[trial={trial}]-evoked-ave.fif", overwrite=config.overwrite)
     return evoked
 
 # Space when none defaults to ico4
@@ -139,11 +140,13 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
     bem_path = pathlib.Path(f"{config.mridir}/{sub}/bem/{sub}-inner_skull-bem-sol.fif")
     assert trans_path.exists(), "Trans file does not exist! Please run compute_coreg first"
     assert bem_path.exists(), "Bem files does not exist! Please run compute_coreg first"
+    if space==None:
+        space = mne.read_source_spaces(f"{config.mridir}/{sub}/bem/{sub}_ico4-src.fif")
 
     trans = mne.read_trans(fname=trans_path)
     bem = mne.read_bem_solution(fname=bem_path)
     forward = mne.make_forward_solution(evoked.info, trans=trans, src=space, bem=bem, meg=True, eeg=False, ignore_ref=True, verbose=verbose)
-    forward.save(fname=f"{config.mridir}/{sub}/bem/{sub}_{config.session}-[trial:{trial}]-solution-fwd.fif", overwrite=config.overwrite)
+    forward.save(fname=f"{config.mridir}/{sub}/bem/{sub}_{config.session}-[trial={trial}]-solution-fwd.fif", overwrite=config.overwrite)
     return forward
 
 def make_cov(sub, config, empty=None, verbose=False):
