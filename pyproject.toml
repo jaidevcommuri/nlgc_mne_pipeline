@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlgc-mne-pipeline"
+version = "0.1.0"
+description = "pipeline to preprocess meg data for nlgc"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
