@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from mne_icalabel import label_components
 
 
-def fit_filters(sub, config, components=None, verbose=False):
+def fit_filters(sub, config, verbose=False):
     assert config.data_src.megdir is not None, \
         "MEG directory has not been initialized in pipeline_config!"
     assert config.scan_info.session != 'UNK', \
@@ -22,7 +22,9 @@ def fit_filters(sub, config, components=None, verbose=False):
     raw_path = pathlib.Path((f"{config.data_src.megdir}/{sub}/{sub}_"
                             f"{config.scan_info.session}-raw.fif"))
     
-    assert raw_path.exists(), "Raw MEG file does not exist!"
+    assert raw_path.exists(), f"Raw MEG file does not exist! Current file path: {raw_path}"
+
+    megout, mriout = _verify_outdir(sub, config)
     
     raw = mne.io.read_raw_fif(raw_path, preload=True)
     raw = raw.resample(config.filter_params.sfreq)
@@ -67,8 +69,10 @@ def fit_filters(sub, config, components=None, verbose=False):
     tsss_causal = raw_tsss.filter(l_freq=l_filt, h_freq=h_filt, picks='meg', 
                                   phase=phase, verbose=verbose)
 
+
+   
     tsss_causal.save(fname=(
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"), 
         overwrite=config.data_src.overwrite
     )
@@ -84,7 +88,7 @@ def fit_filters(sub, config, components=None, verbose=False):
     ica.fit(tsss_causal)
 
     ica.save((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica.fif"), 
         overwrite=config.data_src.overwrite
     )
@@ -98,16 +102,18 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
         "MEG directory has not been initialized in pipeline_config!"
     assert config.scan_info.session != 'UNK', \
         "Please initialize session in the configuration!"
+
+    megout, mriout = _verify_outdir(sub, config)
     
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
     tsss_path = pathlib.Path((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"))
     
     ica_path = pathlib.Path((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica.fif"))
     
     if tsss_causal is None:
@@ -122,14 +128,14 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
 
 
     if (config.filter_params.ICA_mode=='manual'):
-        return _manual_ica(sub, config, tsss_causal, ica)
+        return _manual_ica(sub, config, tsss_causal, ica, megout)
     elif(config.filter_params.ICA_mode=='auto'):
-        return _auto_ica(sub, config, tsss_causal, ica)
+        return _auto_ica(sub, config, tsss_causal, ica, megout)
     else:
         raise RuntimeError(("config.ICA_mode set up incorrectly! "
                            "Please set it to either manual or auto"))
 
-def _manual_ica(sub, config, tsss_causal, ica):
+def _manual_ica(sub, config, tsss_causal, ica, megout):
     ica.plot_components(list(range(20)))
     ica.plot_sources(tsss_causal, block=True)
 
@@ -137,20 +143,20 @@ def _manual_ica(sub, config, tsss_causal, ica):
     h_filt = config.filter_params.wideband_upper_bandlimit
 
     ica.save((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-apply-comp-ica.fif"), 
         overwrite=config.data_src.overwrite
     )
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
 
     ica_apply.save((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
         overwrite=config.data_src.overwrite
     )
     return ica_apply
 
-def _auto_ica(sub, config, tsss_causal, ica):
+def _auto_ica(sub, config, tsss_causal, ica, megout):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
@@ -162,13 +168,13 @@ def _auto_ica(sub, config, tsss_causal, ica):
 
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
     ica_apply.save((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
         overwrite=config.data_src.overwrite
     )
     
     ica.save((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-apply-comp-ica.fif"), 
         overwrite=config.data_src.overwrite
     )
@@ -200,6 +206,8 @@ def filter_empty(sub, config, verbose=False):
     else:
         raise RuntimeError("Invalid MEG System in config!")
 
+    megout, mriout = _verify_outdir(sub, config)
+
     raw_empty = mne.io.read_raw_fif(empty_raw_path, preload=True)
     raw_empty.del_proj() # Necessary for some MEG Systems to be compatible
     
@@ -210,7 +218,7 @@ def filter_empty(sub, config, verbose=False):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
     raw = mne.io.read_raw_fif((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"),
         preload=False
     )
@@ -238,14 +246,14 @@ def filter_empty(sub, config, verbose=False):
     
     # ica
     ica = mne.preprocessing.read_ica((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-apply-comp-ica.fif")
     )
 
     empty_filtered_ica = ica.apply(empty_filtered.copy())
 
     empty_filtered_ica.save(fname=(
-        f"{config.data_src.megdir}/{sub}/{sub}"
+        f"{megout}/{sub}"
         f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
         "-apply-raw.fif"), 
         overwrite=config.data_src.overwrite
@@ -259,31 +267,37 @@ def filter_empty(sub, config, verbose=False):
 def make_src(sub, config, space, verbose=False):
     assert config.data_src.mridir is not None, \
         "MRI directory has not been initialized in pipeline_config!"
+
+    megout, mriout = _verify_outdir(sub, config)
     
     src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
                                  subjects_dir=config.data_src.mridir,
                                  add_dist=True, verbose=verbose)
     
-    src.save(fname=f"{config.data_src.mridir}/{sub}/bem/{sub}_{space}-src.fif", 
+    src.save(fname=f"{mriout}/{sub}_{space}-src.fif", 
              overwrite=config.data_src.overwrite)
     return src
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
+
+    megout, mriout = _verify_outdir(sub, config)
+
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
+
+    assert config.data_src.megdir is not None, \
+        "MEG directory has not been initialized in pipeline_config!"
+
     if ica_apply is None:
         assert pathlib.Path((
-            f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+            f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
             f"{config.scan_info.session}-apply-comp-ica.fif")).exists(), \
         ("ica_apply does not exist in memory. Please either pass a valid "
          "instance of applied ica to raw data, or run apply_ica()")
         
         ica_apply = mne.io.read_raw_fif((
-            f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+            f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
             f"{config.scan_info.session}-ica-apply-raw.fif"))
-        
-    assert config.data_src.megdir is not None, \
-        "MEG directory has not been initialized in pipeline_config!"
     
     print("Making epochs...")
     ica_apply = ica_apply.crop(
@@ -310,7 +324,7 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
                            phase=phase)
 
     evoked.save(fname=(
-            f"{config.data_src.megdir}/{sub}/{sub}_{config.scan_info.session}"
+            f"{megout}/{sub}_{config.scan_info.session}"
             f"-[trial={trial}]-evoked-ave.fif"), 
             overwrite=config.data_src.overwrite
     )
@@ -318,8 +332,10 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
 
 # Space when none defaults to ico4
 def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
-    assert config.data_src.megdir is not None, \
-        "MEG directory has not been initialized in pipeline_config!"
+    megout, mriout = _verify_outdir(sub, config)
+
+    # assert config.data_src.megdir is not None, \
+    #     "MEG directory has not been initialized in pipeline_config!"
     
     assert config.data_src.mridir is not None, \
         "MRI directory has not been initialized in pipeline_config!"
@@ -338,7 +354,7 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
     assert bem_path.exists(), "Bem file does not exist! run compute_coreg first"
     if space is None:
         space = mne.read_source_spaces(
-            f"{config.data_src.mridir}/{sub}/bem/{sub}-ico-4-src.fif"
+            f"{mriout}/{sub}_ico4-src.fif"
         )
 
     trans = mne.read_trans(fname = trans_path)
@@ -355,23 +371,30 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
                                         verbose=verbose)
     print("saving forward")
     forward.save(fname=(
-        f"{config.data_src.mridir}/{sub}/bem/{sub}_{config.scan_info.session}"
+        f"{mriout}/{sub}_{config.scan_info.session}"
         f"-[trial={trial}]-solution-fwd.fif"), 
         overwrite=config.data_src.overwrite
     )
 
     return forward
 
-def make_cov(sub, config, empty, verbose=False):
-    assert config.data_src.megdir is not None, \
-        "MEG directory has not been initialized in pipeline_config!"
+def make_cov(sub, config, empty=None, verbose=False):
+    megout, mriout = _verify_outdir(sub, config)
+    # assert config.data_src.megdir is not None, \
+    #     "MEG directory has not been initialized in pipeline_config!"
     if empty is None:
+        l_filt = config.filter_params.wideband_lower_bandlimit
+        h_filt = config.filter_params.wideband_upper_bandlimit
         assert pathlib.Path(
-            f"{config.data_src.megdir}/{sub}/{sub}_tsss-emptyroom.fif"
-        ).exists(), \
+            f"{megout}/{sub}"
+                    f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                    "-apply-raw.fif").exists(), \
         ("Empty room does not exist. Please either pass a valid instance "
          "of tsss filtered empty room or run filter_empty()")
-        
+        empty=mne.io.read_raw_fif(f"{megout}/{sub}"
+                            f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                            "-apply-raw.fif", preload=True)
+    
     # drop transients at start and end
     empty = empty.crop(tmin=config.scan_info.buffer, tmax=empty.times[-1] - \
                        config.scan_info.buffer)
@@ -385,21 +408,31 @@ def make_cov(sub, config, empty, verbose=False):
     cov = mne.compute_raw_covariance(empty, picks='meg', 
                                      method='auto', rank='info')
     
-    mne.write_cov(fname=f"{config.data_src.megdir}/{sub}/{sub}_cov.fif", 
+    mne.write_cov(fname=f"{megout}/{sub}_cov.fif", 
                   cov=cov, overwrite=config.data_src.overwrite)
     return cov
 
 def view_ica(sub, config):
+    megout, mriout = _verify_outdir(sub, config)
+
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
     tsss_causal = mne.io.read_raw_fif((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"))
     
     ica = mne.preprocessing.read_ica((
-        f"{config.data_src.megdir}/{sub}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica.fif"))
     
     ica.plot_components(list(range(30)))
     ica.plot_sources(tsss_causal, block=True)
+
+def _verify_outdir(sub, config):
+    if config.data_src.outdir is None: return config.data_src.megdir / f"{sub}", config.data_src.mridir / f"{sub}" / 'bem'
+    megout = config.data_src.outdir / 'meg_dir' / f"{sub}"
+    bemout = config.data_src.outdir / 'mri_dir' / f"{sub}" / 'bem'
+    megout.mkdir(parents=True, exist_ok=True)
+    bemout.mkdir(parents=True, exist_ok=True)
+    return megout, bemout

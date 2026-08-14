@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 class PipelineDataSource:
     megdir: str=None
     mridir: str=None
+    outdir: str=None
     overwrite: bool=True
 
 @dataclass
@@ -29,7 +30,7 @@ class PipelineFilterParams:
     ICA_mode: str = 'auto'
     ICA_components: float = 20
     ICA_method: str = 'infomax'
-    sfreq = 250
+    sfreq: int = 250
 
 @dataclass
 class PipelineInverseModelSetup:
