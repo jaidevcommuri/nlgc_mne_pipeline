@@ -1,8 +1,59 @@
 import mne
 import pathlib
 import numpy as np
-from dataclasses import dataclass
 from mne_icalabel import label_components
+from mne.coreg import Coregistration
+from nlgc_pipeline.utils.surfaces import (make_scalp_surfaces, 
+                                          make_bem,
+                                          _remove_implausible_dig_pts)
+                                          
+
+def compute_coreg(sub, config, raw, verbose=False): 
+    trans_path = pathlib.Path(
+        f"{config.data_src.megdir}/{sub}/{sub}-trans.fif"
+    )
+
+    # coreg already done (or manually redone)
+    if trans_path.exists():
+        return raw
+    
+    # need scalp surfaces for coreg
+    make_scalp_surfaces(sub, subjects_dir=config.data_src.mridir)
+    
+    # we generally don't have the exact fiducial points and want to avoid
+    # pulling up the gui to set them manually. we use the fsaverage fiducial
+    # locations as the first pass and then fit ICP to the hsp to refine the
+    # overall fit.
+    coreg = Coregistration(
+        raw.info,
+        sub,
+        subjects_dir=config.data_src.mridir,
+        fiducials="estimated",
+    )
+
+    coreg.fit_fiducials(verbose=verbose)
+    coreg.fit_icp(
+        n_iterations=10,
+        nasion_weight=2.0, # decrease nasion weight as fiducials are estimated
+    )
+
+    # !!! important for tsss, which fits a sphere centered at head origin
+    # defined by hsp. identify and drop implausible hsp !!!
+    raw, coreg = _remove_implausible_dig_pts(raw, coreg)
+
+    # nasion weight higher since we are close to optimum
+    coreg.fit_icp(n_iterations=20, nasion_weight=10.0, verbose=True)
+
+    # fit info
+    dists = coreg.compute_dig_mri_distances() * 1e3  # in mm
+    print(
+        f"Distance between HSP and MRI (mean/min/max):\n{np.mean(dists):.2f} mm"
+        f" / {np.min(dists):.2f} mm / {np.max(dists):.2f} mm"
+    )
+
+    mne.write_trans(trans_path, coreg.trans)
+
+    return raw
 
 
 def fit_filters(sub, config, verbose=False):
@@ -22,12 +73,17 @@ def fit_filters(sub, config, verbose=False):
     raw_path = pathlib.Path((f"{config.data_src.megdir}/{sub}/{sub}_"
                             f"{config.scan_info.session}-raw.fif"))
     
-    assert raw_path.exists(), f"Raw MEG file does not exist! Current file path: {raw_path}"
+    assert raw_path.exists(), \
+        f"Raw MEG file does not exist! Current file path: {raw_path}"
 
     megout, mriout = _verify_outdir(sub, config)
     
     raw = mne.io.read_raw_fif(raw_path, preload=True)
     raw = raw.resample(config.filter_params.sfreq)
+
+    # auto coregister AND drop implausible dig points, which can be important
+    # for maxwell fitering in next step
+    raw = compute_coreg(sub, config, raw, verbose)
 
     # In case we are working with MEGIN data, we need to get rid of projection
     # vectors before ICA; the SSP projection vectors are PCA components applied
@@ -68,8 +124,6 @@ def fit_filters(sub, config, verbose=False):
     phase = config.filter_params.filter_phase
     tsss_causal = raw_tsss.filter(l_freq=l_filt, h_freq=h_filt, picks='meg', 
                                   phase=phase, verbose=verbose)
-
-
    
     tsss_causal.save(fname=(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
@@ -94,6 +148,7 @@ def fit_filters(sub, config, verbose=False):
     )
 
     return tsss_causal, ica
+
 
 def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
     if config.verbose:
@@ -126,14 +181,15 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
             "Must fit ICA before applying. Run fit_ica() before this function"
         ica = mne.preprocessing.read_ica(ica_path)
 
-
     if (config.filter_params.ICA_mode=='manual'):
         return _manual_ica(sub, config, tsss_causal, ica, megout)
     elif(config.filter_params.ICA_mode=='auto'):
         return _auto_ica(sub, config, tsss_causal, ica, megout)
+    elif(config.filter_params.ICA_mode=='auto-strict'):
+        return _auto_ica(sub, config, tsss_causal, ica, megout, strict=True)
     else:
-        raise RuntimeError(("config.ICA_mode set up incorrectly! "
-                           "Please set it to either manual or auto"))
+        raise RuntimeError(("config.ICA_mode set up incorrectly!"))
+
 
 def _manual_ica(sub, config, tsss_causal, ica, megout):
     ica.plot_components(list(range(20)))
@@ -156,15 +212,23 @@ def _manual_ica(sub, config, tsss_causal, ica, megout):
     )
     return ica_apply
 
-def _auto_ica(sub, config, tsss_causal, ica, megout):
+
+def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
-
+    
     labels = label_components(tsss_causal, ica, method='megnet')
     print(labels)
     for idx, label in enumerate(labels['labels']):
-        if label in ['eye blink', 'heart beat']:
-            ica.exclude.append(idx)
+        # exclude any non-brain activity
+        if strict:
+            if "brain" not in label:
+                ica.exclude.append(idx)
+
+        # only exclude blinks and heartbeats
+        else:
+            if label in ['eye blink', 'heart beat']:
+                ica.exclude.append(idx)
 
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
     ica_apply.save((
@@ -261,22 +325,37 @@ def filter_empty(sub, config, verbose=False):
 
     return empty_filtered_ica
 
-# def compute_coreg(): 
-    # Not yet implemented
 
 def make_src(sub, config, space, verbose=False):
     assert config.data_src.mridir is not None, \
         "MRI directory has not been initialized in pipeline_config!"
 
     megout, mriout = _verify_outdir(sub, config)
+
+    # need surfaces for forward later and possibly for vol source space mask now
+    make_bem(sub, config)
     
-    src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
+    if 'ico' in space:
+        src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
                                  subjects_dir=config.data_src.mridir,
                                  add_dist=True, verbose=verbose)
+    elif 'vol' in space:
+        pos = space[3:] # e.g., vol20 yields 20 mm volume voxel grid
+        bem_path = pathlib.Path(
+            f"{config.data_src.mridir}/{sub}/bem/{sub}-inner_skull-bem-sol.fif"
+        )
+        src = mne.setup_volume_source_space(subject=sub, pos=pos, 
+                                            bem=bem_path, 
+                                            mindist=5.0, exclude=0.0, 
+                                            subjects_dir=config.data_src.mridir, 
+                                            verbose=verbose)
+    else:
+        raise Exception(f"source space type {space} not recognized")
     
     src.save(fname=f"{mriout}/{sub}_{space}-src.fif", 
              overwrite=config.data_src.overwrite)
     return src
+
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
 
@@ -330,8 +409,8 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     )
     return evoked
 
-# Space when none defaults to ico4
-def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
+
+def make_fwd(sub, config, evoked, trial, space, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
 
     # assert config.data_src.megdir is not None, \
@@ -352,10 +431,9 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
         "Trans file does not exist! Please run compute_coreg first"
     
     assert bem_path.exists(), "Bem file does not exist! run compute_coreg first"
-    if space is None:
-        space = mne.read_source_spaces(
-            f"{mriout}/{sub}_ico4-src.fif"
-        )
+    space = mne.read_source_spaces(
+        f"{mriout}/{sub}_{space}-src.fif"
+    )
 
     trans = mne.read_trans(fname = trans_path)
     bem = mne.read_bem_solution(fname = bem_path)
@@ -372,16 +450,16 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
     print("saving forward")
     forward.save(fname=(
         f"{mriout}/{sub}_{config.scan_info.session}"
-        f"-[trial={trial}]-solution-fwd.fif"), 
+        f"-[trial={trial}]-[src={space}]-solution-fwd.fif"), 
         overwrite=config.data_src.overwrite
     )
 
     return forward
 
+
 def make_cov(sub, config, empty=None, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
-    # assert config.data_src.megdir is not None, \
-    #     "MEG directory has not been initialized in pipeline_config!"
+
     if empty is None:
         l_filt = config.filter_params.wideband_lower_bandlimit
         h_filt = config.filter_params.wideband_upper_bandlimit
@@ -412,6 +490,7 @@ def make_cov(sub, config, empty=None, verbose=False):
                   cov=cov, overwrite=config.data_src.overwrite)
     return cov
 
+
 def view_ica(sub, config):
     megout, mriout = _verify_outdir(sub, config)
 
@@ -429,8 +508,12 @@ def view_ica(sub, config):
     ica.plot_components(list(range(30)))
     ica.plot_sources(tsss_causal, block=True)
 
+
 def _verify_outdir(sub, config):
-    if config.data_src.outdir is None: return config.data_src.megdir / f"{sub}", config.data_src.mridir / f"{sub}" / 'bem'
+    if config.data_src.outdir is None: 
+        return config.data_src.megdir / f"{sub}", \
+            config.data_src.mridir / f"{sub}" / 'bem'
+    
     megout = config.data_src.outdir / 'meg_dir' / f"{sub}"
     bemout = config.data_src.outdir / 'mri_dir' / f"{sub}" / 'bem'
     megout.mkdir(parents=True, exist_ok=True)
