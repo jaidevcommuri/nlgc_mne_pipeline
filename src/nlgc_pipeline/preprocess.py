@@ -410,7 +410,7 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     return evoked
 
 
-def make_fwd(sub, config, evoked, trial, space, verbose=False):
+def make_fwd(sub, config, info, space, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
 
     # assert config.data_src.megdir is not None, \
@@ -439,7 +439,7 @@ def make_fwd(sub, config, evoked, trial, space, verbose=False):
     bem = mne.read_bem_solution(fname = bem_path)
 
     print("making forward")
-    forward = mne.make_forward_solution(evoked.info, 
+    forward = mne.make_forward_solution(info, 
                                         trans=trans, 
                                         src=space, 
                                         bem=bem, 
@@ -450,7 +450,7 @@ def make_fwd(sub, config, evoked, trial, space, verbose=False):
     print("saving forward")
     forward.save(fname=(
         f"{mriout}/{sub}_{config.scan_info.session}"
-        f"-[trial={trial}]-[src={space}]-solution-fwd.fif"), 
+        f"-[src={space}]-solution-fwd.fif"), 
         overwrite=config.data_src.overwrite
     )
 

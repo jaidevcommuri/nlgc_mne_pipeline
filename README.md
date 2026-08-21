@@ -25,10 +25,10 @@ for space in ["vol20", "vol5"]:
     pipeline.make_src(sub, config, space=space, verbose=verbose)
 
 # by default, will extract a 60 second trial from start of data
+# trigger handling coming soon
 evoked = pipeline.make_evoked(sub, config, trial=0, verbose=True)
 
-# forward may in the future depend on ICA fit per trial, hence one forward per trial
-pipeline.make_fwd(sub, config, evoked=evoked, trial=0, space="vol5", verbose=True)
+pipeline.make_fwd(sub, config, evoked=evoked, space="vol5", verbose=True)
 
 cov = pipeline.make_cov(sub, config, empty, verbose=verbose)
 
