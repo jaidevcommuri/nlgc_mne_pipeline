@@ -403,9 +403,9 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
                            phase=phase)
 
     evoked.save(fname=(
-            f"{megout}/{sub}_{config.scan_info.session}"
-            f"-[trial={trial}]-evoked-ave.fif"), 
-            overwrite=config.data_src.overwrite
+        f"{megout}/{sub}_{config.scan_info.session}"
+        f"-[trial={trial}]-[{l_filt_narrow}-{h_filt_narrow}Hz]-evoked-ave.fif"), 
+        overwrite=config.data_src.overwrite
     )
     return evoked
 
@@ -486,8 +486,12 @@ def make_cov(sub, config, empty=None, verbose=False):
     cov = mne.compute_raw_covariance(empty, picks='meg', 
                                      method='auto', rank='info')
     
-    mne.write_cov(fname=f"{megout}/{sub}_cov.fif", 
-                  cov=cov, overwrite=config.data_src.overwrite)
+    mne.write_cov(
+        fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]_cov.fif", 
+        cov=cov, 
+        overwrite=config.data_src.overwrite
+    )
+    
     return cov
 
 
