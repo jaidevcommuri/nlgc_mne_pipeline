@@ -54,7 +54,7 @@ class PipelineNetwork:
 
         error_list = []
         for key in pipeline:
-            if key == data_id: return
+            if key == data_id: break
             if key == 'Mark': raise KeyError(f"Was not able to find {data_id} in pipeline key iteration!")
             verify_dict = {
                 "Key": key,
@@ -88,12 +88,17 @@ class PipelineNetwork:
 
         if len(error_list) == 0: return
 
+        network = self.__dict__
+        for key in network.keys():
+            if network[key] == pipeline:
+                pipe_name = key
+
         for nodedict in error_list:
-            print(f"\noutdated files identified in {pipeline}: {key}")
+            print(f"\n\noutdated files identified in {pipe_name}: {key}")
             for elem in nodedict['Info']:
                 print(f"\ttrial: {elem[0]}, session: {elem[1]}")
 
-        raise RuntimeError(f"Verification of {data_id} in {pipeline} failed!")
+        raise RuntimeError(f"Verification of {data_id} in {pipe_name} failed!")
         
 
                         # if node.checksum is None: raise RuntimeError(f"{key} trials={node.trials} "
