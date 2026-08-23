@@ -326,18 +326,19 @@ def filter_empty(sub, config, verbose=False):
     return empty_filtered_ica
 
 
-def make_src(sub, config, space, verbose=False):
+def make_src(sub, config, space, generate_bem=False, verbose=False):
     assert config.data_src.mridir is not None, \
         "MRI directory has not been initialized in pipeline_config!"
 
     megout, mriout = _verify_outdir(sub, config)
 
-    # need surfaces for forward later and possibly for vol source space mask now
-    make_bem(sub, config)
+    if generate_bem:
+        make_bem(sub, config)
     
     if 'ico' in space:
         src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
                                  subjects_dir=config.data_src.mridir,
+                                 n_jobs=-1,
                                  add_dist=True, verbose=verbose)
     elif 'vol' in space:
         pos = space[3:] # e.g., vol20 yields 20 mm volume voxel grid
@@ -346,15 +347,31 @@ def make_src(sub, config, space, verbose=False):
         )
         src = mne.setup_volume_source_space(subject=sub, pos=pos, 
                                             bem=bem_path, 
-                                            mindist=5.0, exclude=0.0, 
+                                            mindist=2.0, exclude=0.0, 
                                             subjects_dir=config.data_src.mridir, 
+                                            n_jobs=-1,
                                             verbose=verbose)
     else:
         raise Exception(f"source space type {space} not recognized")
     
-    src.save(fname=f"{mriout}/{sub}_{space}-src.fif", 
-             overwrite=config.data_src.overwrite)
-    return src
+    # convert to head coord frame to match forward
+    trans_path = pathlib.Path(
+        f"{config.data_src.megdir}/{sub}/{sub}-trans.fif"
+    )
+
+    assert trans_path.exists(), \
+        "Trans file does not exist! Please run compute_coreg first"
+    
+    trans = mne.read_trans(fname = trans_path)
+
+    src_head = mne.SourceSpaces(
+        [mne.transform_surface_to(s, "head", trans, copy=True) for s in src]
+    )
+    
+    src_head.save(fname=f"{mriout}/{sub}-{space}-src.fif", 
+                    overwrite=config.data_src.overwrite)
+    
+    return src_head
 
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
@@ -431,8 +448,8 @@ def make_fwd(sub, config, info, space, verbose=False):
         "Trans file does not exist! Please run compute_coreg first"
     
     assert bem_path.exists(), "Bem file does not exist! run compute_coreg first"
-    space = mne.read_source_spaces(
-        f"{mriout}/{sub}_{space}-src.fif"
+    src = mne.read_source_spaces(
+        f"{mriout}/{sub}-{space}-src.fif"
     )
 
     trans = mne.read_trans(fname = trans_path)
@@ -441,7 +458,7 @@ def make_fwd(sub, config, info, space, verbose=False):
     print("making forward")
     forward = mne.make_forward_solution(info, 
                                         trans=trans, 
-                                        src=space, 
+                                        src=src, 
                                         bem=bem, 
                                         meg=True, 
                                         eeg=False, 
@@ -465,13 +482,13 @@ def make_cov(sub, config, empty=None, verbose=False):
         h_filt = config.filter_params.wideband_upper_bandlimit
         assert pathlib.Path(
             f"{megout}/{sub}"
-                    f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-                    "-apply-raw.fif").exists(), \
-        ("Empty room does not exist. Please either pass a valid instance "
-         "of tsss filtered empty room or run filter_empty()")
+                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                "-apply-raw.fif").exists(), \
+            ("Empty room does not exist. Please either pass a valid instance "
+            "of tsss filtered empty room or run filter_empty()")
         empty=mne.io.read_raw_fif(f"{megout}/{sub}"
-                            f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-                            "-apply-raw.fif", preload=True)
+                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                "-apply-raw.fif", preload=True)
     
     # drop transients at start and end
     empty = empty.crop(tmin=config.scan_info.buffer, tmax=empty.times[-1] - \
@@ -487,7 +504,7 @@ def make_cov(sub, config, empty=None, verbose=False):
                                      method='auto', rank='info')
     
     mne.write_cov(
-        fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]_cov.fif", 
+        fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]-cov.fif", 
         cov=cov, 
         overwrite=config.data_src.overwrite
     )
