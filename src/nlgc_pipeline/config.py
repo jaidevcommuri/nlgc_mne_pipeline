@@ -1,11 +1,14 @@
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass, field, asdict
+import pathlib
+import json
+from nlgc_pipeline import checksum
 
 @dataclass
 class PipelineDataSource:
     megdir: str=None
     mridir: str=None
     outdir: str=None
+    config_save: str=None
     overwrite: bool=True
 
 @dataclass
@@ -46,26 +49,21 @@ class PipelineConfig:
                                                PipelineInverseModelSetup)
     filter_params: PipelineFilterParams = field(default_factory=
                                                 PipelineFilterParams)
+
+    metadata: checksum.PipelineNetwork = field(default_factory=checksum.PipelineNetwork)
+    
     verbose: bool = True
 
-    # megdir: str=None
-    # mridir: str=None
+    def save(self, sub, name=None):
+        if name is None:
+            name = "config.json"
+        
+        dst = f"{self.data_src.config_save}/{sub}"
+        pathlib.Path(dst).mkdir(parents=True, exist_ok=True)
 
-    # evoked cannot be properly saved and thus must be made directly before use
-    # meg_type: str='RESTING'
-    # session: str='UNK' #just for saving session name in data path
-    # overwrite: bool=True
-    # epoch_duration: int=60
-    # buffer: int=3 # size of data to be cropped at the beginning and end of MEG recording.
-    # trials: list=field(default_factory=lambda: [0])
-    # make_resting: bool=False
-    # make_empty: bool=False
-    # make_ICA: bool=False
-    # ICA_mode: str='auto'
-    # components: float=30
-    # source_spaces: list=field(default_factory=list)
-    # make_forward: bool=False
-    # make_covariance: bool=False
+        with open(f"{dst}/{name}", "w") as f:
+            json.dump(asdict(self), f, indent=4)
+
 
 
 
