@@ -1,8 +1,13 @@
 import mne
 import pathlib
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from mne_icalabel import label_components
+import hashlib
+import json
+import dacite
+from nlgc_pipeline import config, checksum
+
 
 
 def fit_filters(sub, config, verbose=False):
@@ -23,6 +28,13 @@ def fit_filters(sub, config, verbose=False):
                             f"{config.scan_info.session}-raw.fif"))
     
     assert raw_path.exists(), f"Raw MEG file does not exist! Current file path: {raw_path}"
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='Raw', \
+            trial=trial, session=config.scan_info.session, dst=raw_path)
+
+    # config.metadata.alias_data(src_pipeline=config.metadata.resting_pipe,\
+    #     src_id='Raw', target_pipeline=config.metadata.forward, target_id='Raw')
 
     megout, mriout = _verify_outdir(sub, config)
     
@@ -69,11 +81,10 @@ def fit_filters(sub, config, verbose=False):
     tsss_causal = raw_tsss.filter(l_freq=l_filt, h_freq=h_filt, picks='meg', 
                                   phase=phase, verbose=verbose)
 
-
+    tsss_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+                f"{config.scan_info.session}-raw.fif"
    
-    tsss_causal.save(fname=(
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-raw.fif"), 
+    tsss_causal.save(fname=tsss_path, 
         overwrite=config.data_src.overwrite
     )
 
@@ -87,11 +98,20 @@ def fit_filters(sub, config, verbose=False):
     
     ica.fit(tsss_causal)
 
-    ica.save((
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-ica.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    ica_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-ica.fif" 
+
+    ica.save(ica_path, overwrite=config.data_src.overwrite)
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='Tsss', \
+            trial=trial, session=config.scan_info.session, dst=tsss_path)
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='ICA', \
+            trial=trial, session=config.scan_info.session, dst=ica_path)
+
+    # _save_checksum(config, raw_path)
+    # _save_checksum(config, tsss_path)
+    # _save_checksum(config, ica_path)
 
     return tsss_causal, ica
 
@@ -102,6 +122,10 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
         "MEG directory has not been initialized in pipeline_config!"
     assert config.scan_info.session != 'UNK', \
         "Please initialize session in the configuration!"
+
+    config.metadata.verify_data(pipeline=config.metadata.resting_pipe, \
+        data_id='ICA Comp', session=config.scan_info.session)
+
 
     megout, mriout = _verify_outdir(sub, config)
     
@@ -142,18 +166,24 @@ def _manual_ica(sub, config, tsss_causal, ica, megout):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
-    ica.save((
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-apply-comp-ica.fif"), 
-        overwrite=config.data_src.overwrite
-    )
-    ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
+    ica_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-apply-comp-ica.fif"
 
-    ica_apply.save((
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-ica-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    ica.save(ica_path, overwrite=config.data_src.overwrite)
+    ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
+    apply_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-ica-apply-raw.fif"
+    ica_apply.save(apply_path, overwrite=config.data_src.overwrite)
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='ICA Comp', \
+            trial=trial, session=config.scan_info.session, dst=ica_path)
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='Apply', \
+            trial=trial, session=config.scan_info.session, dst=apply_path)
+    # config.metadata.alias_data(src_pipeline=config.metadata.resting_pipe, \
+    #     src_id='ICA Comp', target_pipeline=config.metadata.empty_pipe, \
+    #     target_id='ICA Comp')
+    
     return ica_apply
 
 def _auto_ica(sub, config, tsss_causal, ica, megout):
@@ -166,20 +196,27 @@ def _auto_ica(sub, config, tsss_causal, ica, megout):
         if label in ['eye blink', 'heart beat']:
             ica.exclude.append(idx)
 
+    ica_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-apply-comp-ica.fif"
+
+    apply_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-ica-apply-raw.fif"
+
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
-    ica_apply.save((
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-ica-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    ica_apply.save(apply_path, overwrite=config.data_src.overwrite)
     
-    ica.save((
-        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-apply-comp-ica.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    ica.save(ica_path, overwrite=config.data_src.overwrite)
     
-    print(type(ica_apply))
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='ICA Comp', \
+            trial=trial, session=config.scan_info.session, dst=ica_path)
+        config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='Apply', \
+            trial=trial, session=config.scan_info.session, dst=apply_path)
+    # config.metadata.alias_data(src_pipeline=config.metadata.resting_pipe, \
+    #     src_id='ICA Comp', target_pipeline=config.metadata.empty_pipe, \
+    #     target_id='ICA Comp')
+    
     return ica_apply
 
 
@@ -193,11 +230,19 @@ def filter_empty(sub, config, verbose=False):
     )
 
     assert empty_raw_path.exists(), "Raw emptyroom does not exist!"
+
     assert pathlib.Path((
             f"{config.data_src.megdir}/{sub}/{sub}_"
             f"{config.scan_info.session}-raw.fif")).exists(), \
         ("empty room processing requires info from the raw MEG file to "
          "be properly oriented! Raw file not found!")
+
+    config.metadata.verify_data(pipeline=config.metadata.empty_pipe, \
+        data_id='Raw', session=config.scan_info.session)
+
+    for trial in config.scan_info.trials:
+            config.metadata.save_checksum(pipeline=config.metadata.empty_pipe, data_id='Raw', \
+                trial=trial, session=config.scan_info.session, dst=empty_raw_path)
     
     if (config.system_spec.meg_sys=='KIT'):
         st_only=True
@@ -237,6 +282,11 @@ def filter_empty(sub, config, verbose=False):
                                                   bad_condition='warning', 
                                                   coord_frame='head', 
                                                   verbose=verbose)
+
+    tsss_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+                f"{config.scan_info.session}-emptyroom-tsss-raw.fif"
+
+    
     
     # bandpass filter
     phase = config.filter_params.filter_phase
@@ -252,13 +302,18 @@ def filter_empty(sub, config, verbose=False):
 
     empty_filtered_ica = ica.apply(empty_filtered.copy())
 
-    empty_filtered_ica.save(fname=(
-        f"{megout}/{sub}"
-        f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-        "-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    empty_path = f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-" \
+            f"{config.scan_info.session}-emptyroom-apply-raw.fif"
 
+    empty_tsss.save(tsss_path, overwrite=config.data_src.overwrite)
+    empty_filtered_ica.save(empty_path, overwrite=config.data_src.overwrite)
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.empty_pipe, data_id='Tsss', \
+            trial=trial, session=config.scan_info.session, dst=tsss_path)
+        config.metadata.save_checksum(pipeline=config.metadata.empty_pipe, data_id='Apply', \
+            trial=trial, session=config.scan_info.session, dst=empty_path)
+    
     return empty_filtered_ica
 
 # def compute_coreg(): 
@@ -273,9 +328,16 @@ def make_src(sub, config, space, verbose=False):
     src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
                                  subjects_dir=config.data_src.mridir,
                                  add_dist=True, verbose=verbose)
+
+    src_path = f"{mriout}/{sub}_{space}-src.fif"
     
-    src.save(fname=f"{mriout}/{sub}_{space}-src.fif", 
-             overwrite=config.data_src.overwrite)
+    src.save(fname=src_path, overwrite=config.data_src.overwrite)
+
+    for trial in config.scan_info.trials:
+        if space not in config.metadata.forward: continue
+        config.metadata.save_checksum(pipeline=config.metadata.forward, data_id=space, \
+            trial=trial, session=config.scan_info.session, dst=src_path)
+    
     return src
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
@@ -323,15 +385,18 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     evoked = evoked.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
                            phase=phase)
 
-    evoked.save(fname=(
-            f"{megout}/{sub}_{config.scan_info.session}"
-            f"-[trial={trial}]-evoked-ave.fif"), 
-            overwrite=config.data_src.overwrite
-    )
+    evoked_path = f"{megout}/{sub}_{config.scan_info.session}" \
+            f"-[trial={trial}]-evoked-ave.fif"
+
+    evoked.save(fname=evoked_path, overwrite=config.data_src.overwrite)
+
+    config.metadata.save_checksum(pipeline=config.metadata.resting_pipe, data_id='Evoked', \
+        trial=trial, session=config.scan_info.session, dst=evoked_path)
+    
     return evoked
 
 # Space when none defaults to ico4
-def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
+def make_fwd(sub, config, trial, space=None, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
 
     # assert config.data_src.megdir is not None, \
@@ -357,11 +422,21 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
             f"{mriout}/{sub}_ico4-src.fif"
         )
 
+    config.metadata.save_checksum(pipeline=config.metadata.forward, data_id='Trans', \
+        trial=trial, session=config.scan_info.session, dst=trans_path)
+    config.metadata.save_checksum(pipeline=config.metadata.forward, data_id='Bem', \
+        trial=trial, session=config.scan_info.session, dst=bem_path)
+
+    config.metadata.verify_data(pipeline=config.metadata.forward, data_id='Forward', trial=trial)
+
+    raw = mne.io.read_raw_fif(pathlib.Path(config.metadata.find_node(pipeline=config.metadata.forward, data_id='Raw',
+                                trial=trial, session=config.scan_info.session).file))
+
     trans = mne.read_trans(fname = trans_path)
     bem = mne.read_bem_solution(fname = bem_path)
 
     print("making forward")
-    forward = mne.make_forward_solution(evoked.info, 
+    forward = mne.make_forward_solution(raw.info, 
                                         trans=trans, 
                                         src=space, 
                                         bem=bem, 
@@ -370,18 +445,20 @@ def make_fwd(sub, config, evoked, trial, space=None, verbose=False):
                                         ignore_ref=True, 
                                         verbose=verbose)
     print("saving forward")
-    forward.save(fname=(
-        f"{mriout}/{sub}_{config.scan_info.session}"
-        f"-[trial={trial}]-solution-fwd.fif"), 
-        overwrite=config.data_src.overwrite
-    )
+    fwd_path = f"{mriout}/{sub}_{config.scan_info.session}" \
+            f"-[trial={trial}]-solution-fwd.fif"
+    forward.save(fname=fwd_path, overwrite=config.data_src.overwrite)
 
+    config.metadata.save_checksum(pipeline=config.metadata.forward, data_id='Forward', \
+        trial=trial, session=config.scan_info.session, dst=fwd_path)
+    
     return forward
 
 def make_cov(sub, config, empty=None, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
     # assert config.data_src.megdir is not None, \
     #     "MEG directory has not been initialized in pipeline_config!"
+
     if empty is None:
         l_filt = config.filter_params.wideband_lower_bandlimit
         h_filt = config.filter_params.wideband_upper_bandlimit
@@ -394,6 +471,8 @@ def make_cov(sub, config, empty=None, verbose=False):
         empty=mne.io.read_raw_fif(f"{megout}/{sub}"
                             f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
                             "-apply-raw.fif", preload=True)
+
+    config.metadata.verify_data(pipeline=config.metadata.empty_pipe, data_id='Cov')
     
     # drop transients at start and end
     empty = empty.crop(tmin=config.scan_info.buffer, tmax=empty.times[-1] - \
@@ -407,9 +486,16 @@ def make_cov(sub, config, empty=None, verbose=False):
 
     cov = mne.compute_raw_covariance(empty, picks='meg', 
                                      method='auto', rank='info')
+
+    cov_path = f"{megout}/{sub}_cov.fif"
     
-    mne.write_cov(fname=f"{megout}/{sub}_cov.fif", 
+    mne.write_cov(fname=cov_path, 
                   cov=cov, overwrite=config.data_src.overwrite)
+
+    for trial in config.scan_info.trials:
+        config.metadata.save_checksum(pipeline=config.metadata.empty_pipe, data_id='Cov', \
+            trial=trial, session=config.scan_info.session, dst=cov_path)
+    
     return cov
 
 def view_ica(sub, config):
@@ -430,9 +516,36 @@ def view_ica(sub, config):
     ica.plot_sources(tsss_causal, block=True)
 
 def _verify_outdir(sub, config):
-    if config.data_src.outdir is None: return config.data_src.megdir / f"{sub}", config.data_src.mridir / f"{sub}" / 'bem'
-    megout = config.data_src.outdir / 'meg_dir' / f"{sub}"
-    bemout = config.data_src.outdir / 'mri_dir' / f"{sub}" / 'bem'
-    megout.mkdir(parents=True, exist_ok=True)
-    bemout.mkdir(parents=True, exist_ok=True)
+    if config.data_src.outdir is None: return f"{config.data_src.megdir}/{sub}", f"{config.data_src.mridir}/{sub}/bem"
+    megout = f"{config.data_src.outdir}/meg/{sub}"
+    bemout = f"{config.data_src.outdir}/meg/{sub}/bem"
+    pathlib.Path(megout).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(bemout).mkdir(parents=True, exist_ok=True)
     return megout, bemout
+
+def load_config(src):
+
+    assert pathlib.Path(src).exists(), f"Error: cannot find file {src}"
+
+    with open(f"{src}", "r") as f:
+        data = json.load(f)
+        # print(data)
+    metadata = data['metadata']
+    pipeline_list = data['metadata'].keys()
+    print(pipeline_list)
+    # config_ret = dacite.from_dict(data_class=config.PipelineConfig, data=data)
+    # return config_ret
+    for pipeline in pipeline_list:
+        if type(metadata[pipeline]) != dict: continue
+        for key in metadata[pipeline]:
+            if key == 'Mark': continue
+            if type(metadata[pipeline][key]) is str: continue
+            metadata[pipeline][key] = [checksum.PipelineNode(**d) \
+                for d in metadata[pipeline][key]]
+    data['metadata'] = metadata
+    return dacite.from_dict(data_class=config.PipelineConfig, data=data)
+    # config = dacite.from_dict(data_class=config.PipelineConfig, data=data)
+    # config.metadata
+
+    
+    
