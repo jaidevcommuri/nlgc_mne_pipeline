@@ -1,59 +1,16 @@
 import mne
 import pathlib
-import numpy as np
 from mne_icalabel import label_components
-from mne.coreg import Coregistration
-from nlgc_pipeline.utils.surfaces import (make_scalp_surfaces, 
-                                          make_bem,
-                                          _remove_implausible_dig_pts)
-                                          
+from nlgc_pipeline.utils.surfaces import make_bem
+from nlgc_pipeline.utils.qc import (maxwell_flat_qc, score_ica_cardiac, 
+                                    robust_noisy_meg_channels)
+from nlgc_pipeline.utils.coreg import compute_coreg
+import numpy as np
 
-def compute_coreg(sub, config, raw, verbose=False): 
-    trans_path = pathlib.Path(
-        f"{config.data_src.megdir}/{sub}/{sub}-trans.fif"
-    )
 
-    # coreg already done (or manually redone)
-    if trans_path.exists():
-        return raw
-    
-    # need scalp surfaces for coreg
-    make_scalp_surfaces(sub, subjects_dir=config.data_src.mridir)
-    
-    # we generally don't have the exact fiducial points and want to avoid
-    # pulling up the gui to set them manually. we use the fsaverage fiducial
-    # locations as the first pass and then fit ICP to the hsp to refine the
-    # overall fit.
-    coreg = Coregistration(
-        raw.info,
-        sub,
-        subjects_dir=config.data_src.mridir,
-        fiducials="estimated",
-    )
-
-    coreg.fit_fiducials(verbose=verbose)
-    coreg.fit_icp(
-        n_iterations=10,
-        nasion_weight=2.0, # decrease nasion weight as fiducials are estimated
-    )
-
-    # !!! important for tsss, which fits a sphere centered at head origin
-    # defined by hsp. identify and drop implausible hsp !!!
-    raw, coreg = _remove_implausible_dig_pts(raw, coreg)
-
-    # nasion weight higher since we are close to optimum
-    coreg.fit_icp(n_iterations=20, nasion_weight=10.0, verbose=True)
-
-    # fit info
-    dists = coreg.compute_dig_mri_distances() * 1e3  # in mm
-    print(
-        f"Distance between HSP and MRI (mean/min/max):\n{np.mean(dists):.2f} mm"
-        f" / {np.min(dists):.2f} mm / {np.max(dists):.2f} mm"
-    )
-
-    mne.write_trans(trans_path, coreg.trans)
-
-    return raw
+SKIP_ANNOTATIONS = ['edge', 
+                    'BAD_ACQ_SKIP',
+                    'BAD_GLOBAL_ARTIFACT']
 
 
 def fit_filters(sub, config, verbose=False):
@@ -81,8 +38,15 @@ def fit_filters(sub, config, verbose=False):
     raw = mne.io.read_raw_fif(raw_path, preload=True)
     raw = raw.resample(config.filter_params.sfreq)
 
+    # initial impression of channels that dominating high-variance noise
+    bads_var, scores = robust_noisy_meg_channels(raw)
+    raw.info['bads'] += bads_var
+
+    if config.verbose:
+        print(f"omitting high-variance channels {bads_var}")
+
     # auto coregister AND drop implausible dig points, which can be important
-    # for maxwell fitering in next step
+    # for maxwell fitering in later steps
     raw = compute_coreg(sub, config, raw, verbose)
 
     # In case we are working with MEGIN data, we need to get rid of projection
@@ -98,23 +62,68 @@ def fit_filters(sub, config, verbose=False):
     # bad channel identification
     if config.verbose:
         print("identifying bad channels")
-    raw = raw.pick(picks='meg', exclude='bads')
-    noisy_ch, flat_ch = mne.preprocessing.find_bad_channels_maxwell(raw, 
-                                                            coord_frame='head', 
-                                                            ignore_ref=True, 
-                                                            verbose=verbose)
-    raw.info['bads'] += noisy_ch + flat_ch
+    raw_qc = raw.pick(picks='meg')
+    
+    auto_noisy_chs, auto_flat_chs, auto_scores = \
+            mne.preprocessing.find_bad_channels_maxwell(raw_qc, 
+                                            coord_frame='head', 
+                                            ignore_ref=True, 
+                                            return_scores=True,
+                                            skip_by_annotation=SKIP_ANNOTATIONS,
+                                            verbose=False)
+    
+    # Raw maxwell filtering can be too aggressive when applied over entire
+    # recording (subject movement during breaks between trials can often cause
+    # clipping). This function 1) identifies those data segments and annotates
+    # them so that they aren't used during downstream filter fitting; and 2)
+    # identifies truly flat channels that are distinct from those with
+    # aforementioned transients
+    persistent_flat_chs, flat_annotations, flat_qc = maxwell_flat_qc(
+        auto_scores,
+        auto_flat_chs=auto_flat_chs,
+        global_flat_fraction=0.25,
+        persistent_flat_fraction=0.80,
+        min_persistent_bins=3,
+        min_global_bins=1,
+        pad_sec=0.25,
+    )
+    annots = raw.annotations + flat_annotations
+
+    annots.save(fname=(
+        f"{megout}/{sub}-"
+        f"{config.scan_info.session}-annotations.csv"), 
+        overwrite=config.data_src.overwrite
+    )
+
+    if config.verbose:
+        print("Auto-flat anywhere:", auto_flat_chs)
+        print("Persistent flat outside global bad bins:", persistent_flat_chs)
+
+        print("Global bad bins:")
+        for bin_idx in np.flatnonzero(flat_qc["global_bin_mask"]):
+            print(
+                bin_idx,
+                auto_scores["bins"][bin_idx],
+                f"flat fraction={flat_qc['bin_flat_fraction'][bin_idx]:.3f}",
+            )
+
+    raw.info['bads'] += auto_noisy_chs + persistent_flat_chs
+    raw.set_annotations(annots)
+
+    if config.verbose:
+        print(f"{raw.info['bads']=}")
 
     # maxwell filter
     if config.verbose:
         print("maxwell filtering")
     raw_tsss = mne.preprocessing.maxwell_filter(raw, st_duration=10, 
-                                                ignore_ref=True, 
-                                                st_correlation=0.9, 
-                                                st_only=st_only, 
-                                                bad_condition='warning', 
-                                                coord_frame='head', 
-                                                verbose=verbose)
+                                            ignore_ref=True, 
+                                            st_correlation=0.9, 
+                                            st_only=st_only, 
+                                            bad_condition='warning', 
+                                            coord_frame='head', 
+                                            skip_by_annotation=SKIP_ANNOTATIONS,
+                                            verbose=False)
     
     # bandpass filter
     if config.verbose:
@@ -123,7 +132,8 @@ def fit_filters(sub, config, verbose=False):
     h_filt = config.filter_params.wideband_upper_bandlimit
     phase = config.filter_params.filter_phase
     tsss_causal = raw_tsss.filter(l_freq=l_filt, h_freq=h_filt, picks='meg', 
-                                  phase=phase, verbose=verbose)
+                                  phase=phase, verbose=verbose,
+                                  skip_by_annotation=SKIP_ANNOTATIONS)
    
     tsss_causal.save(fname=(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
@@ -135,11 +145,11 @@ def fit_filters(sub, config, verbose=False):
     if config.verbose:
         print("fit ica")
     ica = mne.preprocessing.ICA(
-        n_components = config.filter_params.ICA_components,
-        method = config.filter_params.ICA_method,
+        n_components=config.filter_params.ICA_components,
+        method=config.filter_params.ICA_method,
     )
     
-    ica.fit(tsss_causal)
+    ica.fit(tsss_causal, reject_by_annotation=True)
 
     ica.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
@@ -231,6 +241,41 @@ def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
                 ica.exclude.append(idx)
 
     ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
+
+    # megnet can miss heartbeats if they explain low variance in the sensors but
+    # we want to be sure to remove them to avoid systematic shocks to the kf.
+    # find_ecg_events works without reference channels and can pick heartbeat
+    # events using templating
+    ecg_events, _, pulse, ecg = mne.preprocessing.find_ecg_events(
+        tsss_causal,
+        ch_name=None,
+        event_id=999,
+        reject_by_annotation=True,
+        return_ecg=True,
+        verbose=True,
+    )
+
+    # project the ecg events onto the ica componets and remove ones that are
+    # highly correlated
+    cardiac_scores, cardiac_qc = score_ica_cardiac(
+        tsss_causal.copy().filter(5.0, 35.0), # filter to QRS waveform band
+        ica,
+        ecg_events=ecg_events,
+        reject_threshold=0.20,  # reject by statistical threshold, OR
+        min_r2_lock=0.02,       # correlation, OR
+        min_split_r=0.80,       # split waveform correlation
+    )
+
+    cardiac_inds = cardiac_scores.index[
+        cardiac_scores["reject"]
+    ].tolist()
+
+    if config.verbose:
+        print(cardiac_scores)
+        print("Automatic cardiac exclusions:", cardiac_inds)
+
+    ica.exclude = sorted(set(ica.exclude).union(cardiac_inds))
+
     ica_apply.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
@@ -295,17 +340,19 @@ def filter_empty(sub, config, verbose=False):
     
     # maxwell filter
     empty_tsss = mne.preprocessing.maxwell_filter(raw_empty, st_duration=10,
-                                                  ignore_ref=True, 
-                                                  st_correlation=0.9, 
-                                                  st_only=st_only, 
-                                                  bad_condition='warning', 
-                                                  coord_frame='head', 
-                                                  verbose=verbose)
+                                            ignore_ref=True, 
+                                            st_correlation=0.9, 
+                                            st_only=st_only, 
+                                            bad_condition='warning', 
+                                            coord_frame='head', 
+                                            skip_by_annotation=SKIP_ANNOTATIONS,
+                                            verbose=verbose)
     
     # bandpass filter
     phase = config.filter_params.filter_phase
     empty_filtered = empty_tsss.filter(l_freq=l_filt, h_freq=h_filt, 
                                        picks='meg', phase=phase, 
+                                       skip_by_annotation=SKIP_ANNOTATIONS,
                                        verbose=verbose)
     
     # ica
@@ -345,12 +392,14 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
         bem_path = pathlib.Path(
             f"{config.data_src.mridir}/{sub}/bem/{sub}-inner_skull-bem-sol.fif"
         )
-        src = mne.setup_volume_source_space(subject=sub, pos=pos, 
-                                            bem=bem_path, 
-                                            mindist=2.0, exclude=0.0, 
-                                            subjects_dir=config.data_src.mridir, 
-                                            n_jobs=-1,
-                                            verbose=verbose)
+        src = mne.setup_volume_source_space(
+                                        subject=sub, pos=pos, 
+                                        bem=bem_path, 
+                                        mindist=config.inverse.volume_mindist, 
+                                        exclude=config.inverse.volume_exclude, 
+                                        subjects_dir=config.data_src.mridir, 
+                                        n_jobs=-1,
+                                        verbose=verbose)
     else:
         raise Exception(f"source space type {space} not recognized")
     
@@ -417,7 +466,7 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
     h_filt_narrow = config.filter_params.analysis_upper_bandlimit
     phase = config.filter_params.filter_phase
     evoked = evoked.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
-                           phase=phase)
+                           phase=phase, skip_by_annotation=SKIP_ANNOTATIONS)
 
     evoked.save(fname=(
         f"{megout}/{sub}_{config.scan_info.session}"
@@ -498,7 +547,8 @@ def make_cov(sub, config, empty=None, verbose=False):
     h_filt_narrow = config.filter_params.analysis_upper_bandlimit
     phase = config.filter_params.filter_phase
     empty.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
-                           phase=phase)
+                 skip_by_annotation=SKIP_ANNOTATIONS,
+                 phase=phase)
 
     cov = mne.compute_raw_covariance(empty, picks='meg', 
                                      method='auto', rank='info')

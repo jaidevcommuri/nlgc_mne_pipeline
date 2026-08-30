@@ -35,6 +35,9 @@ class PipelineFilterParams:
 @dataclass
 class PipelineInverseModelSetup:
     source_spaces: list=field(default_factory=list)
+    volume_mindist: float = 2.0
+    volume_exclude: float = 0.0
+
 
 @dataclass
 class PipelineConfig:
