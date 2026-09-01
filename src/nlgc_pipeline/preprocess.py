@@ -1,9 +1,11 @@
+from __future__ import annotations
 import mne
 import pathlib
 from mne_icalabel import label_components
 from nlgc_pipeline.utils.surfaces import make_bem
 from nlgc_pipeline.utils.qc import (maxwell_flat_qc, score_ica_cardiac, 
                                     robust_noisy_meg_channels)
+from nlgc_pipeline.utils.annotations import trial_relative_annotations
 from nlgc_pipeline.utils.coreg import compute_coreg
 import numpy as np
 
@@ -424,55 +426,115 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
 
 
 def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
-
+    """create one trial-level evoked file and aligned annotation sidecar."""
     megout, mriout = _verify_outdir(sub, config)
+
+    assert config.data_src.megdir is not None, (
+        "MEG directory has not been initialized in pipeline_config!"
+    )
 
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
-    assert config.data_src.megdir is not None, \
-        "MEG directory has not been initialized in pipeline_config!"
-
     if ica_apply is None:
-        assert pathlib.Path((
+        raw_path = pathlib.Path(
             f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-            f"{config.scan_info.session}-apply-comp-ica.fif")).exists(), \
-        ("ica_apply does not exist in memory. Please either pass a valid "
-         "instance of applied ica to raw data, or run apply_ica()")
-        
-        ica_apply = mne.io.read_raw_fif((
-            f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-            f"{config.scan_info.session}-ica-apply-raw.fif"))
-    
-    print("Making epochs...")
-    ica_apply = ica_apply.crop(
-        tmin=config.scan_info.buffer + trial * \
-            config.scan_info.epoch_duration, 
-        tmax=config.scan_info.buffer + (trial + 1) * \
-            config.scan_info.epoch_duration
+            f"{config.scan_info.session}-ica-apply-raw.fif"
+        )
+
+        assert raw_path.exists(), (
+            "ICA-applied raw file does not exist. Run apply_ica() first, "
+            f"or pass ica_apply explicitly. Current path: {raw_path}"
+        )
+
+        ica_apply = mne.io.read_raw_fif(
+            raw_path,
+            preload=False,
+            verbose=verbose,
+        )
+
+    trial_start_s = (
+        config.scan_info.buffer
+        + trial * config.scan_info.epoch_duration
+    )
+    trial_stop_s = (
+        config.scan_info.buffer
+        + (trial + 1) * config.scan_info.epoch_duration
     )
 
-    epochs = mne.make_fixed_length_epochs(ica_apply, 
-                                    duration=config.scan_info.epoch_duration, 
-                                    reject_by_annotation=False, 
-                                    preload=True, 
-                                    verbose=verbose)
-    print(epochs)
-    print(type(epochs))
+    if trial_start_s < 0:
+        raise ValueError(
+            f"Trial {trial} starts before raw time zero: {trial_start_s} s"
+        )
+
+    if trial_stop_s > ica_apply.times[-1]:
+        raise ValueError(
+            f"Trial {trial} extends beyond the available data. "
+            f"Requested stop={trial_stop_s:.3f} s; "
+            f"available stop={ica_apply.times[-1]:.3f} s."
+        )
+
+    # create the diagnostic annotation artifact before or independently of
+    # cropping. its timing is set explicitly in trial-relative coordinates.
+    trial_annotations = trial_relative_annotations(
+        ica_apply.annotations,
+        trial_start_s=trial_start_s,
+        trial_stop_s=trial_stop_s,
+    )
+
+    trial_raw = ica_apply.copy().crop(
+        tmin=trial_start_s,
+        tmax=trial_stop_s,
+    )
+
+    print(f"Making evoked for {sub}, trial {trial}...")
+
+    epochs = mne.make_fixed_length_epochs(
+        trial_raw,
+        duration=config.scan_info.epoch_duration,
+        reject_by_annotation=False,
+        preload=True,
+        verbose=verbose,
+    )
+
+    if len(epochs) == 0:
+        raise RuntimeError(
+            f"No epochs were created for {sub}, trial {trial}. "
+            f"Crop interval: {trial_start_s:.3f}-{trial_stop_s:.3f} s."
+        )
 
     evoked = epochs.average()
 
     l_filt_narrow = config.filter_params.analysis_lower_bandlimit
     h_filt_narrow = config.filter_params.analysis_upper_bandlimit
     phase = config.filter_params.filter_phase
-    evoked = evoked.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
-                           phase=phase, skip_by_annotation=SKIP_ANNOTATIONS)
 
-    evoked.save(fname=(
-        f"{megout}/{sub}_{config.scan_info.session}"
-        f"-[trial={trial}]-[{l_filt_narrow}-{h_filt_narrow}Hz]-evoked-ave.fif"), 
-        overwrite=config.data_src.overwrite
+    evoked = evoked.filter(
+        l_freq=l_filt_narrow,
+        h_freq=h_filt_narrow,
+        phase=phase,
+        skip_by_annotation=SKIP_ANNOTATIONS,
     )
+
+    stem = (
+        f"{sub}_{config.scan_info.session}"
+        f"-[trial={trial}]"
+        f"-[{l_filt_narrow}-{h_filt_narrow}Hz]"
+    )
+
+    evoked_path = pathlib.Path(f"{megout}/{stem}-evoked-ave.fif")
+    annotations_path = pathlib.Path(f"{megout}/{stem}-annotations.csv")
+
+    evoked.save(
+        fname=evoked_path,
+        overwrite=config.data_src.overwrite,
+    )
+
+    trial_annotations.save(
+        fname=annotations_path,
+        overwrite=config.data_src.overwrite,
+    )
+
     return evoked
 
 
