@@ -1704,7 +1704,7 @@ def make_ica_apply_diagnostic_pdf(
     sessions: Iterable[str],
     config,
     *,
-    output_name: str = "ica_artifact_qc.pdf",
+    output_name: str = "ica_artifact_diagnostics.pdf",
     settings: Optional[ICAQCSettings] = None,
     overwrite: Optional[bool] = None,
     include_missing: bool = False,
@@ -2375,7 +2375,7 @@ def make_ica_sources_diagnostic_pdf(
     sessions: Iterable[str],
     config,
     *,
-    output_name: str = "ica_sources_diagnostic.pdf",
+    output_name: str = "ica_sources_diagnostics.pdf",
     settings: Optional[ICASourcesDiagnosticSettings] = None,
     overwrite: Optional[bool] = None,
 ) -> pathlib.Path:
