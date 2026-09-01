@@ -6,9 +6,9 @@ import numpy as np
 import mne
 
 
-def compute_coreg(sub, config, raw, verbose=False): 
+def compute_coreg(sub, config, raw, megout, verbose=False): 
     trans_path = pathlib.Path(
-        f"{config.data_src.megdir}/{sub}/{sub}-trans.fif"
+        f"{megout}/{sub}/{sub}-trans.fif"
     )
 
     # coreg already done (or manually redone)
