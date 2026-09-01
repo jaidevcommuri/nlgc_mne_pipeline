@@ -230,6 +230,7 @@ def make_coregistration_pdf(
     subjects_dir = pathlib.Path(config.data_src.mridir)
     outdir = pathlib.Path(config.data_src.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    print(outdir)
 
     output_path = outdir / output_name
 
@@ -250,7 +251,7 @@ def make_coregistration_pdf(
             raw_path = megdir / sub / (
                 f"{sub}_{config.scan_info.session}-raw.fif"
             )
-            trans_path = megdir / sub / f"{sub}-trans.fif"
+            trans_path = outdir / 'meg' / sub / f"{sub}-trans.fif"
 
             if not raw_path.exists():
                 _add_message_page(
@@ -370,7 +371,11 @@ def _trial_evoked_path(
 ) -> pathlib.Path:
     """Path to one processed trial Evoked FIF file."""
     stem = _trial_file_stem(sub, session, trial, config)
-
+    print((
+        pathlib.Path(config.data_src.megdir)
+        / sub
+        / f"{stem}-evoked-ave.fif"
+    ))
     return (
         pathlib.Path(config.data_src.megdir)
         / sub
@@ -3661,6 +3666,7 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
     sessions: Iterable[str],
     trials: Iterable[int],
     config,
+    fs=25,
     *,
     settings: Optional[NLGCLeadfieldQCSettings] = None,
     output_name: str = "nlgc_whitener_leadfield_diagnostics.pdf",
@@ -3700,9 +3706,10 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
 
     if settings is None:
         settings = NLGCLeadfieldQCSettings(
-            band_label=f"{lb_analysis}-{ub_analysis}Hz"
+            band_label=f"{lb_analysis}-{ub_analysis}Hz",
+            display_sfreq=fs,
         )
-
+    
     subjects = list(subjects)
     sessions = list(sessions)
     trials = list(trials)

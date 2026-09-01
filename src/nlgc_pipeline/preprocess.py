@@ -382,24 +382,24 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
 
     if generate_bem:
-        make_bem(sub, config)
+        make_bem(sub, mriout, config)
     
     if 'ico' in space:
         src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
-                                 subjects_dir=mriout,
+                                 subjects_dir=mriout / '..' / '..',
                                  n_jobs=-1,
                                  add_dist=True, verbose=verbose)
     elif 'vol' in space:
         pos = space[3:] # e.g., vol20 yields 20 mm volume voxel grid
         bem_path = pathlib.Path(
-            f"{mriout}/{sub}/bem/{sub}-inner_skull-bem-sol.fif"
+            f"{mriout}/{sub}-inner_skull-bem-sol.fif"
         )
         src = mne.setup_volume_source_space(
                                         subject=sub, pos=pos, 
                                         bem=bem_path, 
                                         mindist=config.inverse.volume_mindist, 
                                         exclude=config.inverse.volume_exclude, 
-                                        subjects_dir=mriout, 
+                                        subjects_dir=mriout / '..' / '..',
                                         n_jobs=-1,
                                         verbose=verbose)
     else:
@@ -407,7 +407,7 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
     
     # convert to head coord frame to match forward
     trans_path = pathlib.Path(
-        f"{megout}/{sub}/{sub}-trans.fif"
+        f"{megout}/{sub}-trans.fif"
     )
 
     assert trans_path.exists(), \
@@ -556,11 +556,11 @@ def make_fwd(sub, config, info, space, verbose=False):
         "MRI directory has not been initialized in pipeline_config!"
     
     trans_path = pathlib.Path(
-        f"{megout}/{sub}/{sub}-trans.fif"
+        f"{megout}/{sub}-trans.fif"
     )
-
+    print(f"{mriout=}")
     bem_path = pathlib.Path(
-        f"{mriout}/{sub}/bem/{sub}-inner_skull-bem-sol.fif"
+        f"{mriout}/{sub}-inner_skull-bem-sol.fif"
     )
 
     assert trans_path.exists(), \

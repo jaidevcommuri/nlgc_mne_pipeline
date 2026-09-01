@@ -6,7 +6,7 @@ import numpy as np
 from mne.io.constants import FIFF
 
 
-def make_bem(sub, config):
+def make_bem(sub, mriout, config):
     mne.bem.make_watershed_bem(
         subject=sub,
         subjects_dir=config.data_src.mridir,
@@ -14,7 +14,7 @@ def make_bem(sub, config):
     )
     
     bem_path = Path(
-        f"{config.data_src.mridir}/{sub}/bem/{sub}-inner_skull-bem-sol.fif"
+        f"{mriout}/{sub}-inner_skull-bem-sol.fif"
     )
 
     model = mne.make_bem_model(
@@ -32,7 +32,7 @@ def make_scalp_surfaces(subject, subjects_dir):
     """Create scalp surfaces, repairing the dense surface if needed."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", RuntimeWarning)
-
+        print(subject, subjects_dir)
         mne.bem.make_scalp_surfaces(
             subject,
             subjects_dir=subjects_dir,

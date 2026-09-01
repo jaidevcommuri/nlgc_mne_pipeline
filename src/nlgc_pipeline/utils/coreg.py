@@ -8,7 +8,7 @@ import mne
 
 def compute_coreg(sub, config, raw, megout, verbose=False): 
     trans_path = pathlib.Path(
-        f"{megout}/{sub}/{sub}-trans.fif"
+        f"{megout}/{sub}-trans.fif"
     )
 
     # coreg already done (or manually redone)
@@ -16,6 +16,7 @@ def compute_coreg(sub, config, raw, megout, verbose=False):
         return raw
     
     # need scalp surfaces for coreg
+    print("subjects dir = ", config.data_src.mridir)
     make_scalp_surfaces(sub, subjects_dir=config.data_src.mridir)
     
     # we generally don't have the exact fiducial points and want to avoid
