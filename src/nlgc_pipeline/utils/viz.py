@@ -3660,11 +3660,12 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
     subjects: Iterable[str],
     sessions: Iterable[str],
     trials: Iterable[int],
+    config,
     *,
     megdir: str | pathlib.Path,
     mridir: str | pathlib.Path,
     outdir: str | pathlib.Path,
-    wideband_label: str = "1-100",
+    
     settings: Optional[NLGCLeadfieldQCSettings] = None,
     output_name: str = "nlgc_whitener_leadfield_diagnostics.pdf",
     overwrite: bool = True,
@@ -3693,7 +3694,14 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
     terminating the full PDF.
     """
     if settings is None:
-        settings = NLGCLeadfieldQCSettings()
+        lb_analysis = config.filter_params.analysis_lower_bandlimit
+        ub_analysis = config.filter_params.analysis_upper_bandlimit
+        lb_wideband = config.filter_params.wideband_lower_bandlimit
+        ub_wideband = config.filter_params.wideband_upper_bandlimit
+        wideband_label = f"{lb_wideband}-{ub_wideband}"
+        settings = NLGCLeadfieldQCSettings(
+            band_label=f"{lb_analysis}-{ub_analysis}Hz"
+        )
 
     subjects = list(subjects)
     sessions = list(sessions)

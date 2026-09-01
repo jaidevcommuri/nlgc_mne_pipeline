@@ -647,8 +647,8 @@ def _verify_outdir(sub, config):
         return config.data_src.megdir / f"{sub}", \
             config.data_src.mridir / f"{sub}" / 'bem'
     
-    megout = config.data_src.outdir / 'meg_dir' / f"{sub}"
-    bemout = config.data_src.outdir / 'mri_dir' / f"{sub}" / 'bem'
+    megout = config.data_src.outdir / 'meg' / f"{sub}"
+    bemout = config.data_src.outdir / 'mri' / f"{sub}" / 'bem'
     megout.mkdir(parents=True, exist_ok=True)
     bemout.mkdir(parents=True, exist_ok=True)
     return megout, bemout
