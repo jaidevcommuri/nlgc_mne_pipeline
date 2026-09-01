@@ -425,7 +425,7 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
     return src_head
 
 
-def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
+def make_evoked(sub, config, trial, ica_apply=None, verbose=False, fix_sensor_56=False):
     """create one trial-level evoked file and aligned annotation sidecar."""
     megout, mriout = _verify_outdir(sub, config)
 
@@ -524,6 +524,14 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False):
 
     evoked_path = pathlib.Path(f"{megout}/{stem}-evoked-ave.fif")
     annotations_path = pathlib.Path(f"{megout}/{stem}-annotations.csv")
+
+    if fix_sensor_56:
+        loc = np.array([
+            0.09603, -0.07437, 0.00905, -0.5447052, -0.83848277,
+            0.01558496, 0., -0.01858388, -0.9998273, 0.8386276,
+            -0.54461113, 0.01012274])
+        index = evoked.ch_names.index('MEG 056')
+        evoked.info['chs'][index]['loc'] = loc
 
     evoked.save(
         fname=evoked_path,
