@@ -20,7 +20,7 @@ def make_bem(sub, mriout, config):
     model = mne.make_bem_model(
         subject=sub,
         ico=4,
-        conductivity=(0.3, 0.006, 0.3),
+        conductivity=[0.3],
         subjects_dir=config.data_src.mridir,
     )
 

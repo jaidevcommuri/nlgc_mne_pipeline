@@ -1,14 +1,21 @@
 from __future__ import annotations
-import mne
+
 import pathlib
+import subprocess
+
+import mne
+import numpy as np
 from mne_icalabel import label_components
-from nlgc_pipeline.utils.surfaces import make_bem
-from nlgc_pipeline.utils.qc import (maxwell_flat_qc, score_ica_cardiac, 
-                                    robust_noisy_meg_channels)
+
 from nlgc_pipeline.utils.annotations import trial_relative_annotations
 from nlgc_pipeline.utils.coreg import compute_coreg
-import numpy as np
-
+from nlgc_pipeline.utils.qc import (
+    maxwell_flat_qc,
+    robust_noisy_meg_channels,
+    score_ica_cardiac,
+)
+from nlgc_pipeline.utils.source import make_cortical_hull
+from nlgc_pipeline.utils.surfaces import make_bem
 
 SKIP_ANNOTATIONS = ['edge', 
                     'BAD_ACQ_SKIP',
@@ -149,6 +156,7 @@ def fit_filters(sub, config, verbose=False):
     ica = mne.preprocessing.ICA(
         n_components=config.filter_params.ICA_components,
         method=config.filter_params.ICA_method,
+        random_state = 42,
     )
     
     ica.fit(tsss_causal, reject_by_annotation=True)
@@ -156,13 +164,13 @@ def fit_filters(sub, config, verbose=False):
     ica.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite = config.data_src.overwrite,
     )
 
     return tsss_causal, ica
 
 
-def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
+def apply_ica(sub, config, tsss_causal=None, ica=None, icadict=None, verbose=False):
     if config.verbose:
         print(f"apply ica with mode={config.filter_params.ICA_mode}")
     assert config.data_src.megdir is not None, \
@@ -199,8 +207,35 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, verbose=False):
         return _auto_ica(sub, config, tsss_causal, ica, megout)
     elif(config.filter_params.ICA_mode=='auto-strict'):
         return _auto_ica(sub, config, tsss_causal, ica, megout, strict=True)
+    elif(config.filter_params.ICA_mode=='supplied'):
+        return _manual_ica_fromdict(sub, config, tsss_causal, ica, megout, icadict)
     else:
-        raise RuntimeError(("config.ICA_mode set up incorrectly!"))
+        raise RuntimeError("config.ICA_mode set up incorrectly!")
+
+
+def _manual_ica_fromdict(sub, config, tsss_causal, ica, megout, icadict):
+    assert icadict is not None
+    
+    l_filt = config.filter_params.wideband_lower_bandlimit
+    h_filt = config.filter_params.wideband_upper_bandlimit
+
+    ica.exclude = sorted(set(icadict[sub]))
+    ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
+
+    ica_apply.save((
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{config.scan_info.session}-ica-apply-raw.fif"), 
+        overwrite=config.data_src.overwrite
+    )
+    
+    ica.save((
+        f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
+        f"{config.scan_info.session}-apply-comp-ica.fif"), 
+        overwrite=config.data_src.overwrite
+    )
+    
+    print(type(ica_apply))
+    return ica_apply
 
 
 def _manual_ica(sub, config, tsss_causal, ica, megout):
@@ -242,8 +277,6 @@ def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
             if label in ['eye blink', 'heart beat']:
                 ica.exclude.append(idx)
 
-    ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
-
     # megnet can miss heartbeats if they explain low variance in the sensors but
     # we want to be sure to remove them to avoid systematic shocks to the kf.
     # find_ecg_events works without reference channels and can pick heartbeat
@@ -277,6 +310,8 @@ def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
         print("Automatic cardiac exclusions:", cardiac_inds)
 
     ica.exclude = sorted(set(ica.exclude).union(cardiac_inds))
+
+    ica_apply = ica.apply(tsss_causal.copy(), exclude=ica.exclude)
 
     ica_apply.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
@@ -383,6 +418,25 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
 
     if generate_bem:
         make_bem(sub, mriout, config)
+        make_cortical_hull(sub, mriout, config)
+
+        command = ["cp", "-r", str(config.data_src.mridir / sub / "surf"), str(mriout / '..')]
+
+        try:
+            # Execute the command and capture output
+            result = subprocess.run(
+                command, 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
+            
+        except subprocess.CalledProcessError as e:
+            print("Error executing mri_tessellate. Make sure FreeSurfer is sourced in your terminal environment.")
+            print(f"STDOUT:\n{e.stdout}")
+            print(f"STDERR:\n{e.stderr}")
+            raise e
     
     if 'ico' in space:
         src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
@@ -391,12 +445,12 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
                                  add_dist=True, verbose=verbose)
     elif 'vol' in space:
         pos = space[3:] # e.g., vol20 yields 20 mm volume voxel grid
-        bem_path = pathlib.Path(
-            f"{mriout}/{sub}-inner_skull-bem-sol.fif"
+        surface_path = pathlib.Path(
+            f"{mriout}/{sub}_cortical_hull_mask.surf"
         )
         src = mne.setup_volume_source_space(
                                         subject=sub, pos=pos, 
-                                        bem=bem_path, 
+                                        surface=surface_path, 
                                         mindist=config.inverse.volume_mindist, 
                                         exclude=config.inverse.volume_exclude, 
                                         subjects_dir=mriout / '..' / '..',
