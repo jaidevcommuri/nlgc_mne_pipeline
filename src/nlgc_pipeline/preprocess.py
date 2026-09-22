@@ -147,7 +147,7 @@ def fit_filters(sub, config, verbose=False):
     tsss_causal.save(fname=(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
     )
 
     # ica fit
@@ -329,16 +329,25 @@ def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
     return ica_apply
 
 
+def _canonicalize_emptyroom_names(er_names):
+    return er_names[0].lower()
+
+
 def filter_empty(sub, config, verbose=False):
     print("Filtering emptyroom...")
     assert config.data_src.megdir is not None, \
         "MEG directory has not been initialized in pipeline_config!"
-    
-    empty_raw_path = pathlib.Path(
-        f"{config.data_src.megdir}/{sub}/{sub}_emptyroom-raw.fif"
-    )
+
+    emptyroom_names = config.scan_info.emptyroom_names
+    for emptyroom_name in emptyroom_names:
+        empty_raw_path = pathlib.Path(
+            f"{config.data_src.megdir}/{sub}/{sub}_{emptyroom_name}-raw.fif"
+        )
+        if not empty_raw_path.exists():
+            continue
 
     assert empty_raw_path.exists(), "Raw emptyroom does not exist!"
+
     assert pathlib.Path((
             f"{config.data_src.megdir}/{sub}/{sub}_"
             f"{config.scan_info.session}-raw.fif")).exists(), \
@@ -400,10 +409,12 @@ def filter_empty(sub, config, verbose=False):
 
     empty_filtered_ica = ica.apply(empty_filtered.copy())
 
+    emptyroom_savestring = _canonicalize_emptyroom_names(emptyroom_names)
+    
     empty_filtered_ica.save(fname=(
         f"{megout}/{sub}"
-        f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-        "-apply-raw.fif"), 
+        f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-"
+        f"{emptyroom_savestring}-apply-raw.fif"), 
         overwrite=config.data_src.overwrite
     )
 
@@ -642,6 +653,12 @@ def make_fwd(sub, config, info, space, verbose=False):
         f"{mriout}/{sub}_{config.scan_info.session}"
         f"-[src={space}]-solution-fwd.fif"), 
         overwrite=config.data_src.overwrite
+    )
+
+    # save fwd solution data with 64-bit precision
+    np.save((f"{mriout}/{sub}_{config.scan_info.session}"
+             f"-[src={space}]-solution-fwd-sidecar.npy"), 
+            forward['sol']['data'],
     )
 
     return forward
