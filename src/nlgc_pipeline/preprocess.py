@@ -149,6 +149,7 @@ def fit_filters(sub, config, verbose=False):
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-raw.fif"), 
         overwrite=config.data_src.overwrite,
+        fmt='double',
     )
 
     # ica fit
@@ -184,13 +185,13 @@ def apply_ica(sub, config, tsss_causal=None, ica=None, icadict=None, verbose=Fal
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
-    tsss_path = pathlib.Path((
+    tsss_path = pathlib.Path(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-raw.fif"))
+        f"{config.scan_info.session}-raw.fif")
     
-    ica_path = pathlib.Path((
+    ica_path = pathlib.Path(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-ica.fif"))
+        f"{config.scan_info.session}-ica.fif")
     
     if tsss_causal is None:
         assert tsss_path.exists(), \
@@ -226,13 +227,14 @@ def _manual_ica_fromdict(sub, config, tsss_causal, ica, megout, icadict):
     ica_apply.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
+        fmt='double',
     )
     
     ica.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-apply-comp-ica.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
     )
     
     print(type(ica_apply))
@@ -256,7 +258,8 @@ def _manual_ica(sub, config, tsss_causal, ica, megout):
     ica_apply.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
+        fmt='double',
     )
     return ica_apply
 
@@ -317,13 +320,14 @@ def _auto_ica(sub, config, tsss_causal, ica, megout, strict=False):
     ica_apply.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-ica-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
+        fmt='double',
     )
     
     ica.save((
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
         f"{config.scan_info.session}-apply-comp-ica.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
     )
     
     print(type(ica_apply))
@@ -346,12 +350,14 @@ def filter_empty(sub, config, verbose=False):
         )
         if not empty_raw_path.exists():
             continue
+        else:
+            break
 
     assert empty_raw_path.exists(), "Raw emptyroom does not exist!"
 
-    assert pathlib.Path((
+    assert pathlib.Path(
             f"{config.data_src.megdir}/{sub}/{sub}_"
-            f"{config.scan_info.session}-raw.fif")).exists(), \
+            f"{config.scan_info.session}-raw.fif").exists(), \
         ("empty room processing requires info from the raw MEG file to "
          "be properly oriented! Raw file not found!")
     
@@ -403,9 +409,9 @@ def filter_empty(sub, config, verbose=False):
                                        verbose=verbose)
     
     # ica
-    ica = mne.preprocessing.read_ica((
+    ica = mne.preprocessing.read_ica(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-apply-comp-ica.fif")
+        f"{config.scan_info.session}-apply-comp-ica.fif"
     )
 
     empty_filtered_ica = ica.apply(empty_filtered.copy())
@@ -416,7 +422,8 @@ def filter_empty(sub, config, verbose=False):
         f"{megout}/{sub}"
         f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-"
         f"{emptyroom_savestring}-apply-raw.fif"), 
-        overwrite=config.data_src.overwrite
+        overwrite=config.data_src.overwrite,
+        fmt='double',
     )
 
     return empty_filtered_ica
@@ -695,15 +702,29 @@ def make_cov(sub, config, empty=None, verbose=False):
     empty.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
                  skip_by_annotation=SKIP_ANNOTATIONS,
                  phase=phase)
-
-    cov = mne.compute_raw_covariance(empty, picks='meg', 
-                                     method='auto', rank='info')
     
+
+    cov = mne.compute_raw_covariance(empty, 
+                                     picks='meg', 
+                                     method='empirical', 
+                                     rank=None)
+    
+    info_rank = mne.compute_rank(empty, rank='info')
+    estimated_rank = mne.compute_rank(empty, rank=None)
+    print(f"mne covariance rank from info: {info_rank}")
+    print(f"mne covariance rank from eigs: {estimated_rank}")
+
     mne.write_cov(
         fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]-cov.fif", 
         cov=cov, 
         overwrite=config.data_src.overwrite
     )
+
+    # save covariance matrix with 64-bit precision
+    np.save((f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]"
+             "-cov-sidecar.npy"), 
+            cov['data'],
+    )    
     
     return cov
 
@@ -714,13 +735,13 @@ def view_ica(sub, config):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
 
-    tsss_causal = mne.io.read_raw_fif((
+    tsss_causal = mne.io.read_raw_fif(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-raw.fif"))
+        f"{config.scan_info.session}-raw.fif")
     
-    ica = mne.preprocessing.read_ica((
+    ica = mne.preprocessing.read_ica(
         f"{megout}/{sub}_tsss-{l_filt}-{h_filt}-"
-        f"{config.scan_info.session}-ica.fif"))
+        f"{config.scan_info.session}-ica.fif")
     
     ica.plot_components(list(range(30)))
     ica.plot_sources(tsss_causal, block=True)
