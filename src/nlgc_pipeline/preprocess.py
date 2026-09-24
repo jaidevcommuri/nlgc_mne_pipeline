@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import shutil
 
 import mne
 import numpy as np
@@ -426,7 +427,11 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
         "MRI directory has not been initialized in pipeline_config!"
 
     megout, mriout = _verify_outdir(sub, config)
-
+    t1_source = config.data_src.mridir / sub / "mri/T1.mgz"
+    t1_dest = mriout / '../mri/T1.mgz'
+    t1_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(t1_source), str(t1_dest))
+    
     if generate_bem:
         make_bem(sub, mriout, config)
         make_cortical_hull(sub, mriout, config)
@@ -455,7 +460,7 @@ def make_src(sub, config, space, generate_bem=False, verbose=False):
                                  n_jobs=-1,
                                  add_dist=True, verbose=verbose)
     elif 'vol' in space:
-        pos = space[3:] # e.g., vol20 yields 20 mm volume voxel grid
+        pos = float(space[3:]) # e.g., vol20 yields 20 mm volume voxel grid
         surface_path = pathlib.Path(
             f"{mriout}/{sub}_cortical_hull_mask.surf"
         )
