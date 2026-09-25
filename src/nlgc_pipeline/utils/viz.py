@@ -3427,6 +3427,7 @@ def _nlgc_qc_write_summary_page(
         "",
         "ICA / rank treatment",
         f"ICA exclusions: {list(ica.exclude) if ica is not None else 'ICA not loaded'}",
+        f"Bad channels: {evoked.info['bads']}",
         f"MNE rank before ICA adjustment: {raw_rank}",
         f"Rank supplied to prepare_eigenmodes: {adjusted_rank}",
         "",
@@ -3565,7 +3566,7 @@ def _nlgc_qc_write_whitener_page(
 
     # Equal-sized top-left panel.
     image = ax_raw.imshow(
-        raw_display.T,
+        raw_display,
         aspect="auto",
         cmap=settings.cmap_data,
         vmin=-raw_limit,
@@ -3588,7 +3589,7 @@ def _nlgc_qc_write_whitener_page(
 
     # Same GridSpec-cell dimensions as M_raw.
     image = ax_whitened.imshow(
-        whitened_display.T,
+        whitened_display,
         aspect="auto",
         cmap=settings.cmap_data,
         vmin=-whitened_limit,
@@ -3847,6 +3848,9 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
                             cov_path,
                             verbose="ERROR",
                         )
+                        cov_sidecar_path = str(cov_path).replace("-cov.fif", "-cov-sidecar.npy")
+                        cov_sidecar_data = np.load(cov_sidecar_path)
+                        cov['data'] = cov_sidecar_data
 
                         src_target = mne.read_source_spaces(
                             src_target_path,
@@ -3858,6 +3862,12 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
                             verbose="ERROR",
                         )
 
+                        fwd_sidecar_path = str(forward_path).replace("-fwd.fif", "-fwd-sidecar.npy")
+                        fwd_sidecar_data = np.load(fwd_sidecar_path)
+                        forward['sol']['data'] = fwd_sidecar_data
+
+                        print("done")
+    
                         # ICA is needed only for optional rank adjustment.
                         # A missing ICA sidecar does not block the remaining
                         # whitener/leadfield diagnostic.
@@ -3919,6 +3929,7 @@ def make_nlgc_whitener_leadfield_diagnostic_pdf(
                         )
 
                     except Exception as error:
+                        print(error)
                         fig = plt.figure(figsize=(11, 8.5))
 
                         fig.text(

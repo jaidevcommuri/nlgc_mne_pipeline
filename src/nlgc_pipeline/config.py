@@ -11,6 +11,7 @@ class PipelineDataSource:
 @dataclass
 class PipelineSystemSpec:
     meg_sys: str = 'KIT'
+    known_bads: list=field(default_factory=lambda: ['MEG 056', 'MEG 086'])
 
 @dataclass 
 class PipelineParticipantScanInfo:
@@ -19,7 +20,7 @@ class PipelineParticipantScanInfo:
     trials: list=field(default_factory=lambda: [0])
     epoch_duration: int=60
     buffer: int=3 # size of data to be cropped at the beginning and end of MEG recording.
-    emptyroom_names = ["emptyroom"]
+    emptyroom_names: list=field(default_factory=lambda: ['emptyroom'])
 
 @dataclass
 class PipelineFilterParams:

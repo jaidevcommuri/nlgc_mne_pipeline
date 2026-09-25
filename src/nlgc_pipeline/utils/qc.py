@@ -1,6 +1,7 @@
 import numpy as np
 import mne
 import pandas as pd
+from collections import Counter
 
 
 def robust_noisy_meg_channels(
@@ -469,3 +470,83 @@ def score_ica_cardiac(
     }
 
     return results, qc
+
+
+def detect_entrywise_cov_outliers(cov, z_thresh=12.0):
+    """
+    Scans EVERY unique entry in the covariance matrix—both diagonal variances (C_ii) 
+    and off-diagonal covariances (C_ij)—for point-level spikes.
+    """
+    cov_matrix = cov['data']
+    ch_names = cov['names']
+    n_chs = len(ch_names)
+    
+    # k=0 extracts upper-triangle INCLUDING the main diagonal
+    triu_i, triu_j = np.triu_indices(n_chs, k=0)
+    
+    # 1D vector of all N*(N+1)/2 unique entries
+    unique_entries = cov_matrix[triu_i, triu_j]
+    
+    # Modified Z-Score (MAD) across all matrix elements
+    median_val = np.median(unique_entries)
+    mad_val = np.median(np.abs(unique_entries - median_val))
+    
+    if mad_val == 0:
+        return [], []
+        
+    mod_z = 0.6745 * (unique_entries - median_val) / mad_val
+    
+    # Find outlier indices
+    outlier_indices = np.where(mod_z > z_thresh)[0]
+    
+    bad_entries = []
+    
+    for idx in outlier_indices:
+        i, j = triu_i[idx], triu_j[idx]
+        ch_i, ch_j = ch_names[i], ch_names[j]
+        val = unique_entries[idx]
+        z = mod_z[idx]
+        is_diag = (i == j)
+        
+        bad_entries.append((ch_i, ch_j, val, z, is_diag))
+        
+        if is_diag:
+            print(f"[Matrix Spike] Diagonal Variance ({ch_i}): {val:.4e} T^2 (Mod-Z = {z:.2f})")
+        else:
+            print(f"[Matrix Spike] Off-Diag Covariance ({ch_i}, {ch_j}): {val:.4e} T^2 (Mod-Z = {z:.2f})")
+            
+    return bad_entries
+
+def resolve_bad_channels_from_entries(bad_entries, cov_matrix, ch_names):
+    """
+    Maps flagged entries (diagonal or off-diagonal) back to offender channels.
+    """
+    if not bad_entries:
+        return []
+        
+    implicated = []
+    for ch_i, ch_j, _, _, is_diag in bad_entries:
+        if is_diag:
+            # Diagonal spike directly pinpoints ch_i
+            implicated.append(ch_i)
+        else:
+            # Off-diagonal spike implicates both
+            implicated.extend([ch_i, ch_j])
+            
+    # Count frequency of appearance in bad entries
+    counts = Counter(implicated)
+    
+    channels_to_exclude = []
+    for ch, count in counts.items():
+        ch_idx = ch_names.index(ch)
+        var = cov_matrix[ch_idx, ch_idx]
+        channels_to_exclude.append((ch, count, var))
+            
+    # Sort primarily by spike involvement count, secondarily by individual variance
+    channels_to_exclude.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    
+    print("\nOffender channels identified from matrix spikes:")
+    for ch, count, var in channels_to_exclude:
+        print(f"  -> {ch}: present in {count} spike cell(s) | Variance = {var:.4e} T^2")
+        
+    return [ch for ch, _, _ in channels_to_exclude]

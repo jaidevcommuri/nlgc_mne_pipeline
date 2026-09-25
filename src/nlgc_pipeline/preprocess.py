@@ -14,6 +14,7 @@ from nlgc_pipeline.utils.qc import (
     maxwell_flat_qc,
     robust_noisy_meg_channels,
     score_ica_cardiac,
+    detect_entrywise_cov_outliers,
 )
 from nlgc_pipeline.utils.source import make_cortical_hull
 from nlgc_pipeline.utils.surfaces import make_bem
@@ -47,6 +48,7 @@ def fit_filters(sub, config, verbose=False):
     
     raw = mne.io.read_raw_fif(raw_path, preload=True)
     raw = raw.resample(config.filter_params.sfreq)
+    raw.info['bads'] = config.system_spec.known_bads
 
     # initial impression of channels that dominating high-variance noise
     bads_var, scores = robust_noisy_meg_channels(raw)
@@ -141,8 +143,10 @@ def fit_filters(sub, config, verbose=False):
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
     phase = config.filter_params.filter_phase
-    tsss_causal = raw_tsss.filter(l_freq=l_filt, h_freq=h_filt, picks='meg', 
-                                  phase=phase, verbose=verbose,
+    tsss_causal = raw_tsss.filter(l_freq=l_filt, 
+                                  h_freq=h_filt, 
+                                  phase=phase, 
+                                  verbose=verbose,
                                   skip_by_annotation=SKIP_ANNOTATIONS)
    
     tsss_causal.save(fname=(
@@ -372,9 +376,7 @@ def filter_empty(sub, config, verbose=False):
 
     raw_empty = mne.io.read_raw_fif(empty_raw_path, preload=True)
     raw_empty.del_proj() # Necessary for some MEG Systems to be compatible
-    
-    raw_empty = raw_empty.pick(picks='meg', exclude='bads')
-    
+        
     raw_empty = raw_empty.resample(config.filter_params.sfreq)
 
     l_filt = config.filter_params.wideband_lower_bandlimit
@@ -404,7 +406,7 @@ def filter_empty(sub, config, verbose=False):
     # bandpass filter
     phase = config.filter_params.filter_phase
     empty_filtered = empty_tsss.filter(l_freq=l_filt, h_freq=h_filt, 
-                                       picks='meg', phase=phase, 
+                                       phase=phase, 
                                        skip_by_annotation=SKIP_ANNOTATIONS,
                                        verbose=verbose)
     
@@ -428,81 +430,80 @@ def filter_empty(sub, config, verbose=False):
 
     return empty_filtered_ica
 
-
-def make_src(sub, config, space, generate_bem=False, verbose=False):
-    assert config.data_src.mridir is not None, \
-        "MRI directory has not been initialized in pipeline_config!"
-
+def make_cov(sub, config, empty=None, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
-    t1_source = config.data_src.mridir / sub / "mri/T1.mgz"
-    t1_dest = mriout / '../mri/T1.mgz'
-    t1_dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(str(t1_source), str(t1_dest))
-    
-    if generate_bem:
-        make_bem(sub, mriout, config)
-        make_cortical_hull(sub, mriout, config)
 
-        command = ["cp", "-r", str(config.data_src.mridir / sub / "surf"), str(mriout / '..')]
+    l_filt = config.filter_params.wideband_lower_bandlimit
+    h_filt = config.filter_params.wideband_upper_bandlimit
+    if empty is None:
+        assert pathlib.Path(
+            f"{megout}/{sub}"
+                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                "-apply-raw.fif").exists(), \
+            ("Empty room does not exist. Please either pass a valid instance "
+            "of tsss filtered empty room or run filter_empty()")
+        empty=mne.io.read_raw_fif(f"{megout}/{sub}"
+                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+                "-apply-raw.fif", preload=True)
+    
+    # drop transients at start and end
+    empty = empty.crop(tmin=config.scan_info.buffer, tmax=empty.times[-1] - \
+                       config.scan_info.buffer)
 
-        try:
-            # Execute the command and capture output
-            result = subprocess.run(
-                command, 
-                check=True, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
-                text=True
-            )
-            
-        except subprocess.CalledProcessError as e:
-            print("Error executing mri_tessellate. Make sure FreeSurfer is sourced in your terminal environment.")
-            print(f"STDOUT:\n{e.stdout}")
-            print(f"STDERR:\n{e.stderr}")
-            raise e
+    l_filt_narrow = config.filter_params.analysis_lower_bandlimit
+    h_filt_narrow = config.filter_params.analysis_upper_bandlimit
+    phase = config.filter_params.filter_phase
+    empty.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
+                 skip_by_annotation=SKIP_ANNOTATIONS,
+                 phase=phase)
     
-    if 'ico' in space:
-        src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
-                                 subjects_dir=mriout / '..' / '..',
-                                 n_jobs=-1,
-                                 add_dist=True, verbose=verbose)
-    elif 'vol' in space:
-        pos = float(space[3:]) # e.g., vol20 yields 20 mm volume voxel grid
-        surface_path = pathlib.Path(
-            f"{mriout}/{sub}_cortical_hull_mask.surf"
-        )
-        src = mne.setup_volume_source_space(
-                                        subject=sub, pos=pos, 
-                                        surface=surface_path, 
-                                        mindist=config.inverse.volume_mindist, 
-                                        exclude=config.inverse.volume_exclude, 
-                                        subjects_dir=mriout / '..' / '..',
-                                        n_jobs=-1,
-                                        verbose=verbose)
-    else:
-        raise Exception(f"source space type {space} not recognized")
-    
-    # convert to head coord frame to match forward
-    trans_path = pathlib.Path(
-        f"{megout}/{sub}-trans.fif"
+
+    cov_initial = mne.compute_raw_covariance(empty, 
+                                     method='empirical', 
+                                     rank=None)
+
+    bad_detections = detect_entrywise_cov_outliers(cov_initial)
+    additional_bads = [i[0] for i in bad_detections]
+    expanded_bads = list(np.unique(empty.info['bads'] +
+                                        additional_bads))
+    empty.info['bads'] = expanded_bads
+
+    cov = mne.compute_raw_covariance(empty, 
+                                     method='shrunk', 
+                                     rank=None)
+                                    
+    cov['bads'] = expanded_bads
+
+    info_rank = mne.compute_rank(empty, rank='info')
+    estimated_rank = mne.compute_rank(empty, rank=None)
+    print(f"mne covariance rank from info: {info_rank}")
+    print(f"mne covariance rank from eigs: {estimated_rank}")
+
+    mne.write_cov(
+        fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]-cov.fif", 
+        cov=cov, 
+        overwrite=config.data_src.overwrite
     )
 
-    assert trans_path.exists(), \
-        "Trans file does not exist! Please run compute_coreg first"
-    
-    trans = mne.read_trans(fname = trans_path)
+    # save covariance matrix with 64-bit precision
+    np.save((f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]"
+             "-cov-sidecar.npy"), 
+            cov['data'],
+    )    
 
-    src_head = mne.SourceSpaces(
-        [mne.transform_surface_to(s, "head", trans, copy=True) for s in src]
+    # modified empty with expanded bads
+    empty.save(f"{megout}/{sub}"
+        f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+        "-apply-raw.fif", 
+        overwrite=True, 
+        fmt='double'
     )
     
-    src_head.save(fname=f"{mriout}/{sub}-{space}-src.fif", 
-                    overwrite=config.data_src.overwrite)
-    
-    return src_head
+    return cov
 
 
-def make_evoked(sub, config, trial, ica_apply=None, verbose=False, fix_sensor_56=False):
+def make_evoked(sub, config, trial, ica_apply=None, verbose=False, 
+                fix_sensor_56=False):
     """create one trial-level evoked file and aligned annotation sidecar."""
     megout, mriout = _verify_outdir(sub, config)
 
@@ -512,6 +513,19 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False, fix_sensor_56
 
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
+
+    assert pathlib.Path(
+        f"{megout}/{sub}"
+            f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+            "-apply-raw.fif").exists(), \
+        ("Empty room does not exist. Please either pass a valid instance "
+        "of tsss filtered empty room or run filter_empty()")
+    
+    empty = mne.io.read_raw_fif(f"{megout}/{sub}"
+            f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
+            "-apply-raw.fif", preload=True)
+    
+    expanded_bads = empty.info['bads']
 
     if ica_apply is None:
         raw_path = pathlib.Path(
@@ -529,6 +543,8 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False, fix_sensor_56
             preload=False,
             verbose=verbose,
         )
+
+    ica_apply.info['bads'] = expanded_bads
 
     trial_start_s = (
         config.scan_info.buffer
@@ -623,6 +639,79 @@ def make_evoked(sub, config, trial, ica_apply=None, verbose=False, fix_sensor_56
     return evoked
 
 
+def make_src(sub, config, space, generate_bem=False, verbose=False):
+    assert config.data_src.mridir is not None, \
+        "MRI directory has not been initialized in pipeline_config!"
+
+    megout, mriout = _verify_outdir(sub, config)
+    t1_source = config.data_src.mridir / sub / "mri/T1.mgz"
+    t1_dest = mriout / '../mri/T1.mgz'
+    t1_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(t1_source), str(t1_dest))
+    
+    if generate_bem:
+        make_bem(sub, mriout, config)
+        make_cortical_hull(sub, mriout, config)
+
+        command = ["cp", "-r", str(config.data_src.mridir / sub / "surf"), str(mriout / '..')]
+
+        try:
+            # Execute the command and capture output
+            result = subprocess.run(
+                command, 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
+            
+        except subprocess.CalledProcessError as e:
+            print("Error executing mri_tessellate. Make sure FreeSurfer is sourced in your terminal environment.")
+            print(f"STDOUT:\n{e.stdout}")
+            print(f"STDERR:\n{e.stderr}")
+            raise e
+    
+    if 'ico' in space:
+        src = mne.setup_source_space(subject=sub, spacing=space, surface='white', 
+                                 subjects_dir=mriout / '..' / '..',
+                                 n_jobs=-1,
+                                 add_dist=True, verbose=verbose)
+    elif 'vol' in space:
+        pos = float(space[3:]) # e.g., vol20 yields 20 mm volume voxel grid
+        surface_path = pathlib.Path(
+            f"{mriout}/{sub}_cortical_hull_mask.surf"
+        )
+        src = mne.setup_volume_source_space(
+                                        subject=sub, pos=pos, 
+                                        surface=surface_path, 
+                                        mindist=config.inverse.volume_mindist, 
+                                        exclude=config.inverse.volume_exclude, 
+                                        subjects_dir=mriout / '..' / '..',
+                                        n_jobs=-1,
+                                        verbose=verbose)
+    else:
+        raise Exception(f"source space type {space} not recognized")
+    
+    # convert to head coord frame to match forward
+    trans_path = pathlib.Path(
+        f"{megout}/{sub}-trans.fif"
+    )
+
+    assert trans_path.exists(), \
+        "Trans file does not exist! Please run compute_coreg first"
+    
+    trans = mne.read_trans(fname = trans_path)
+
+    src_head = mne.SourceSpaces(
+        [mne.transform_surface_to(s, "head", trans, copy=True) for s in src]
+    )
+    
+    src_head.save(fname=f"{mriout}/{sub}-{space}-src.fif", 
+                    overwrite=config.data_src.overwrite)
+    
+    return src_head
+
+
 def make_fwd(sub, config, info, space, verbose=False):
     megout, mriout = _verify_outdir(sub, config)
 
@@ -674,59 +763,6 @@ def make_fwd(sub, config, info, space, verbose=False):
     )
 
     return forward
-
-
-def make_cov(sub, config, empty=None, verbose=False):
-    megout, mriout = _verify_outdir(sub, config)
-
-    if empty is None:
-        l_filt = config.filter_params.wideband_lower_bandlimit
-        h_filt = config.filter_params.wideband_upper_bandlimit
-        assert pathlib.Path(
-            f"{megout}/{sub}"
-                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-                "-apply-raw.fif").exists(), \
-            ("Empty room does not exist. Please either pass a valid instance "
-            "of tsss filtered empty room or run filter_empty()")
-        empty=mne.io.read_raw_fif(f"{megout}/{sub}"
-                f"_tsss-{l_filt}-{h_filt}-{config.scan_info.session}-emptyroom"
-                "-apply-raw.fif", preload=True)
-    
-    # drop transients at start and end
-    empty = empty.crop(tmin=config.scan_info.buffer, tmax=empty.times[-1] - \
-                       config.scan_info.buffer)
-
-    l_filt_narrow = config.filter_params.analysis_lower_bandlimit
-    h_filt_narrow = config.filter_params.analysis_upper_bandlimit
-    phase = config.filter_params.filter_phase
-    empty.filter(l_freq=l_filt_narrow, h_freq=h_filt_narrow, 
-                 skip_by_annotation=SKIP_ANNOTATIONS,
-                 phase=phase)
-    
-
-    cov = mne.compute_raw_covariance(empty, 
-                                     picks='meg', 
-                                     method='empirical', 
-                                     rank=None)
-    
-    info_rank = mne.compute_rank(empty, rank='info')
-    estimated_rank = mne.compute_rank(empty, rank=None)
-    print(f"mne covariance rank from info: {info_rank}")
-    print(f"mne covariance rank from eigs: {estimated_rank}")
-
-    mne.write_cov(
-        fname=f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]-cov.fif", 
-        cov=cov, 
-        overwrite=config.data_src.overwrite
-    )
-
-    # save covariance matrix with 64-bit precision
-    np.save((f"{megout}/{sub}-[{l_filt_narrow}-{h_filt_narrow}Hz]"
-             "-cov-sidecar.npy"), 
-            cov['data'],
-    )    
-    
-    return cov
 
 
 def view_ica(sub, config):
