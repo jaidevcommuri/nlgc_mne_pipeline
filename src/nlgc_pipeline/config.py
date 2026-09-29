@@ -12,6 +12,7 @@ class PipelineDataSource:
 class PipelineSystemSpec:
     meg_sys: str = 'KIT'
     known_bads: list=field(default_factory=lambda: ['MEG 056', 'MEG 086'])
+    expand_bads_emptyroom_cov: bool = False
 
 @dataclass 
 class PipelineParticipantScanInfo:
@@ -39,7 +40,6 @@ class PipelineInverseModelSetup:
     source_spaces: list=field(default_factory=list)
     volume_mindist: float = 2.0
     volume_exclude: float = 0.0
-
 
 @dataclass
 class PipelineConfig:

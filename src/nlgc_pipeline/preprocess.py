@@ -464,12 +464,16 @@ def make_cov(sub, config, empty=None, verbose=False):
 
     bad_detections = detect_entrywise_cov_outliers(cov_initial)
     additional_bads = [i[0] for i in bad_detections]
-    expanded_bads = list(np.unique(empty.info['bads'] +
-                                        additional_bads))
+
+    if config.pipeline_config.expand_bads_emptyroom_cov:
+        expanded_bads = list(np.unique(empty.info['bads'] + additional_bads))
+    else:
+        expanded_bads = list(np.unique(empty.info['bads']))
+
     empty.info['bads'] = expanded_bads
 
     cov = mne.compute_raw_covariance(empty, 
-                                     method='shrunk', 
+                                     method='empirical', 
                                      rank=None)
                                     
     cov['bads'] = expanded_bads
