@@ -465,7 +465,7 @@ def make_cov(sub, config, empty=None, verbose=False):
     bad_detections = detect_entrywise_cov_outliers(cov_initial)
     additional_bads = [i[0] for i in bad_detections]
 
-    if config.pipeline_config.expand_bads_emptyroom_cov:
+    if config.system_spec.expand_bads_emptyroom_cov:
         expanded_bads = list(np.unique(empty.info['bads'] + additional_bads))
     else:
         expanded_bads = list(np.unique(empty.info['bads']))

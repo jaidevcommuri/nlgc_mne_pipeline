@@ -16,6 +16,7 @@ import os
 import re
 from matplotlib.gridspec import GridSpec
 from nlgc.utils.leadfield import prepare_eigenmodes
+from matplotlib.patches import Rectangle
 
 
 # Must be set before the first MNE 3-D visualization is created.
@@ -1926,14 +1927,668 @@ def make_ica_apply_diagnostic_pdf(
 # ICA components QC
 ################################################################################
 
+# @dataclass(frozen=True)
+# class ICASourcesDiagnosticSettings:
+#     """Layout settings for ICA source-browser and spectral QC."""
+#     window_duration_s: float = 20.0
+#     n_windows_per_session: int = 4
+
+#     # "even" gives representative session coverage.
+#     # "manual" uses `window_starts_s` exactly.
+#     window_selection: str = "even"
+#     window_starts_s: Optional[tuple[float, ...]] = None
+
+#     # ICA browser figure settings.
+#     source_figsize: tuple[float, float] = (16, 10)
+
+#     # Session-level component spectra.
+#     psd_fmin: float = 1.0
+#     psd_fmax: float = 100.0
+#     psd_n_fft: int = 2048
+#     psd_figsize: tuple[float, float] = (16, 10)
+#     psd_n_cols: int = 4
+#     psd_max_components_per_page: int = 24
+#     psd_color_good: str = "black"
+#     psd_color_rejected: str = "crimson"
+#     psd_linewidth: float = 0.7
+
+# def _ica_sources_diagnostic_stem(
+#     sub: str,
+#     session: str,
+#     config,
+# ) -> str:
+#     """Build the shared raw/ICA filename stem."""
+#     l_filt = config.filter_params.wideband_lower_bandlimit
+#     h_filt = config.filter_params.wideband_upper_bandlimit
+
+#     return f"{sub}_tsss-{l_filt}-{h_filt}-{session}"
+
+
+# def _ica_sources_diagnostic_raw_path(
+#     sub: str,
+#     session: str,
+#     config,
+# ) -> pathlib.Path:
+#     """Path to the tSSS raw file directly preceding ICA application."""
+#     stem = _ica_sources_diagnostic_stem(sub, session, config)
+
+#     return (
+#         pathlib.Path(config.data_src.megdir)
+#         / sub
+#         / f"{stem}-raw.fif"
+#     )
+
+
+# def _ica_sources_diagnostic_ica_path(
+#     sub: str,
+#     session: str,
+#     config,
+# ) -> pathlib.Path:
+#     """Path to the ICA object saved by `ica.save()`."""
+#     stem = _ica_sources_diagnostic_stem(sub, session, config)
+
+#     return (
+#         pathlib.Path(config.data_src.megdir)
+#         / sub
+#         / f"{stem}-apply-comp-ica.fif"
+#     )
+
+
+# def _ica_sources_diagnostic_window_starts(
+#     raw: mne.io.BaseRaw,
+#     *,
+#     settings: ICASourcesDiagnosticSettings,
+# ) -> np.ndarray:
+#     """Choose valid 20-second starts from a session-level raw recording."""
+#     raw_start_s = float(raw.times[0])
+#     raw_stop_s = float(raw.times[-1])
+
+#     if settings.window_duration_s <= 0:
+#         raise ValueError("window_duration_s must be positive.")
+
+#     if settings.window_selection == "manual":
+#         if not settings.window_starts_s:
+#             raise ValueError(
+#                 "window_starts_s must be provided when "
+#                 "window_selection='manual'."
+#             )
+
+#         starts = np.asarray(
+#             settings.window_starts_s,
+#             dtype=float,
+#         )
+
+#         return starts[
+#             (starts >= raw_start_s)
+#             & (starts < raw_stop_s)
+#         ]
+
+#     if settings.window_selection != "even":
+#         raise ValueError(
+#             "window_selection must be 'even' or 'manual'."
+#         )
+
+#     if settings.n_windows_per_session <= 0:
+#         raise ValueError("n_windows_per_session must be positive.")
+
+#     final_start_s = raw_stop_s - settings.window_duration_s
+
+#     if final_start_s <= raw_start_s:
+#         return np.array([raw_start_s], dtype=float)
+
+#     return np.linspace(
+#         raw_start_s,
+#         final_start_s,
+#         num=settings.n_windows_per_session,
+#         dtype=float,
+#     )
+
+# def _ica_sources_diagnostic_save_browser_page(
+#     pdf: PdfPages,
+#     *,
+#     raw: mne.io.BaseRaw,
+#     ica: mne.preprocessing.ICA,
+#     sub: str,
+#     session: str,
+#     start_s: float,
+#     settings: ICASourcesDiagnosticSettings,
+#     page_number: int,
+#     n_windows: int,
+# ) -> None:
+#     """
+#     Save one MNE ICA source-browser view to the report PDF.
+
+#     MNE handles ICA source traces, exclusions, annotations, and scrolling.
+#     Do not pass `picks` here: with some MNE versions, explicitly passing
+#     component indices can trigger ICA plot_sources indexing errors.
+#     """
+#     raw_start_s = float(raw.times[0])
+#     raw_stop_s = float(raw.times[-1])
+
+#     stop_s = min(
+#         float(start_s) + settings.window_duration_s,
+#         raw_stop_s,
+#     )
+#     duration_s = stop_s - float(start_s)
+
+#     fig = ica.plot_sources(
+#         raw,
+#         start=float(start_s),
+#         stop=stop_s,
+#         show=False,
+#     )
+
+#     # MNE may set/re-set its axes title internally. Figure-level text is
+#     # independent of that title and will be included in the PDF.
+#     fig.text(
+#         0.5,
+#         0.985,
+#         f"ICA source diagnostic | Subject: {sub} | Session: {session}",
+#         ha="center",
+#         va="top",
+#         fontsize=14,
+#         fontweight="bold",
+#     )
+
+#     fig.text(
+#         0.5,
+#         0.012,
+#         f"Window {page_number}/{n_windows} | "
+#         f"Session interval: {start_s:.2f}–{stop_s:.2f} s | "
+#         f"Window duration: {duration_s:.2f} s | "
+#         f"Full recording: {raw_start_s:.2f}–{raw_stop_s:.2f} s\n"
+#         f"Rejected ICA components: {list(ica.exclude) if ica.exclude else 'none'} | "
+#         f"Red = rejected; black = retained | "
+#         f"Native MNE annotations are shown in the source browser.",
+#         ha="center",
+#         va="bottom",
+#         fontsize=8,
+#     )
+
+#     # Important: use a large enough bottom margin that the metadata footer
+#     # does not cover MNE's source-browser scroll/navigation controls.
+#     fig.subplots_adjust(
+#         top=0.94,
+#         bottom=0.11,
+#     )
+
+#     pdf.savefig(fig)
+#     plt.close(fig)
+
+# def _ica_sources_diagnostic_component_index(
+#     channel_name: str,
+# ) -> int:
+#     """
+#     Extract an ICA component index from an MNE ICA source channel name.
+
+#     Supported examples:
+#     - "ICA000"  -> 0
+#     - "ICA017"  -> 17
+#     - "ICA 000" -> 0
+#     - "ICA 017" -> 17
+#     - "IC_17"   -> 17
+#     - "component-17" -> 17
+#     """
+#     match = re.search(
+#         r"(\d+)\s*$",
+#         str(channel_name),
+#     )
+
+#     if match is None:
+#         raise ValueError(
+#             "Could not determine ICA component index from source "
+#             f"channel name: {channel_name!r}"
+#         )
+
+#     return int(match.group(1))
+    
+    
+# def _ica_sources_diagnostic_write_psd_pages(
+#     pdf: PdfPages,
+#     *,
+#     raw: mne.io.BaseRaw,
+#     ica: mne.preprocessing.ICA,
+#     sub: str,
+#     session: str,
+#     settings: ICASourcesDiagnosticSettings,
+# ) -> None:
+#     """
+#     Write session-level Welch PSD grids for every ICA component.
+
+#     Rejected components are red and retained components are black.
+
+#     Important:
+#     - ICA source channels are picked explicitly.
+#     - `exclude=[]` is passed to both compute_psd() and get_data() so source
+#       channels marked bad cannot silently disappear and desynchronize PSD-row
+#       order from the source-channel list.
+#     """
+#     source_raw = ica.get_sources(raw)
+
+#     source_picks = np.arange(
+#         len(source_raw.ch_names),
+#         dtype=int,
+#     )
+
+#     if source_picks.size == 0:
+#         raise RuntimeError(
+#             f"No ICA source channels found for {sub} | {session}."
+#         )
+
+#     source_channel_names = [
+#         source_raw.ch_names[pick]
+#         for pick in source_picks
+#     ]
+
+#     spectrum = source_raw.compute_psd(
+#         method="welch",
+#         fmin=settings.psd_fmin,
+#         fmax=settings.psd_fmax,
+#         picks=source_picks,
+#         exclude=[],
+#         n_fft=settings.psd_n_fft,
+#         verbose="ERROR",
+#     )
+
+#     psds, freqs = spectrum.get_data(
+#         picks=np.arange(len(source_channel_names)),
+#         exclude=[],
+#         return_freqs=True,
+#     )
+
+#     if psds.ndim != 2:
+#         raise RuntimeError(
+#             "Expected PSD data shaped "
+#             "(n_components, n_frequencies), got "
+#             f"{psds.shape}."
+#         )
+
+#     if psds.shape[0] != len(source_channel_names):
+#         raise RuntimeError(
+#             "ICA PSD channel mismatch after explicit selections: "
+#             f"{psds.shape[0]} PSD rows versus "
+#             f"{len(source_channel_names)} selected source channels. "
+#             f"PSD channels: {getattr(spectrum, 'ch_names', 'unknown')}"
+#         )
+
+#     psds_db = 10.0 * np.log10(
+#         np.maximum(
+#             psds,
+#             np.finfo(float).tiny,
+#         )
+#     )
+
+#     rejected_components = {
+#         int(component)
+#         for component in ica.exclude
+#     }
+
+#     # PSD row index is intentionally separate from ICA component index.
+#     component_rows = [
+#         (
+#             psd_row,
+#             _ica_sources_diagnostic_component_index(
+#                 source_channel_names[psd_row]
+#             ),
+#             source_channel_names[psd_row],
+#         )
+#         for psd_row in range(len(source_channel_names))
+#     ]
+
+#     components_per_page = max(
+#         1,
+#         settings.psd_max_components_per_page,
+#     )
+#     n_cols = max(1, settings.psd_n_cols)
+#     n_rows = int(
+#         np.ceil(components_per_page / n_cols)
+#     )
+
+#     n_pages = int(
+#         np.ceil(len(component_rows) / components_per_page)
+#     )
+
+#     for page_number, start_index in enumerate(
+#         range(0, len(component_rows), components_per_page),
+#         start=1,
+#     ):
+#         page_rows = component_rows[
+#             start_index:start_index + components_per_page
+#         ]
+
+#         fig, axes = plt.subplots(
+#             n_rows,
+#             n_cols,
+#             figsize=settings.psd_figsize,
+#             squeeze=False,
+#             sharex=True,
+#         )
+
+#         for ax, (
+#             psd_row,
+#             component_index,
+#             _source_channel_name,
+#         ) in zip(
+#             axes.flat,
+#             page_rows,
+#         ):
+#             is_rejected = component_index in rejected_components
+
+#             ax.plot(
+#                 freqs,
+#                 psds_db[psd_row],
+#                 color=(
+#                     settings.psd_color_rejected
+#                     if is_rejected
+#                     else settings.psd_color_good
+#                 ),
+#                 linewidth=settings.psd_linewidth,
+#             )
+
+#             status = (
+#                 "rejected"
+#                 if is_rejected
+#                 else "retained"
+#             )
+
+#             ax.set_title(
+#                 f"IC {component_index}: {status}",
+#                 fontsize=8,
+#                 color=(
+#                     settings.psd_color_rejected
+#                     if is_rejected
+#                     else settings.psd_color_good
+#                 ),
+#             )
+
+#             ax.set_xlim(
+#                 settings.psd_fmin,
+#                 settings.psd_fmax,
+#             )
+#             ax.grid(
+#                 color="0.88",
+#                 linewidth=0.5,
+#             )
+#             ax.tick_params(
+#                 axis="both",
+#                 labelsize=6,
+#             )
+
+#             ax.spines["top"].set_visible(False)
+#             ax.spines["right"].set_visible(False)
+
+#         for ax in axes.flat[len(page_rows):]:
+#             ax.set_axis_off()
+
+#         for ax in axes[-1, :]:
+#             ax.set_xlabel(
+#                 "Frequency (Hz)",
+#                 fontsize=8,
+#             )
+
+#         for ax in axes[:, 0]:
+#             ax.set_ylabel(
+#                 "Power (dB)",
+#                 fontsize=8,
+#             )
+
+#         component_ids = [
+#             component_index
+#             for _, component_index, _ in page_rows
+#         ]
+
+#         fig.suptitle(
+#             f"ICA component spectra | Subject: {sub} | "
+#             f"Session: {session} | PSD page {page_number}/{n_pages}",
+#             fontsize=15,
+#             fontweight="bold",
+#             y=0.985,
+#         )
+
+#         fig.text(
+#             0.5,
+#             0.008,
+#             f"Welch PSD: {settings.psd_fmin:g}–"
+#             f"{settings.psd_fmax:g} Hz | "
+#             f"n_fft={settings.psd_n_fft} | "
+#             f"Components on this page: {component_ids} | "
+#             f"Rejected/red: {sorted(rejected_components) or 'none'} | "
+#             f"Retained/black: all others",
+#             ha="center",
+#             va="bottom",
+#             fontsize=8,
+#         )
+
+#         fig.subplots_adjust(
+#             left=0.07,
+#             right=0.99,
+#             top=0.93,
+#             bottom=0.06,
+#             hspace=0.62,
+#             wspace=0.28,
+#         )
+
+#         pdf.savefig(fig)
+#         plt.close(fig)
+
+# def make_ica_sources_diagnostic_pdf(
+#     subjects: Iterable[str],
+#     sessions: Iterable[str],
+#     config,
+#     *,
+#     output_name: str = "ica_sources_diagnostics.pdf",
+#     settings: Optional[ICASourcesDiagnosticSettings] = None,
+#     overwrite: Optional[bool] = None,
+# ) -> pathlib.Path:
+#     """
+#     Create a multipage ICA diagnostic PDF.
+
+#     For each available subject/session pair, writes:
+
+#     1. Several MNE ICA-source browser pages covering windows distributed
+#        through the complete raw session. MNE displays the raw annotations
+#        and component rejection status.
+
+#     2. One or more session-level Welch PSD grid pages showing all ICA
+#        components. Rejected components are red; retained components black.
+
+#     The report adds subject, session, exact session-time interval, actual
+#     duration, recording range, rejected-component list, component index
+#     range, and PSD settings to the exported pages.
+#     """
+#     if settings is None:
+#         settings = ICASourcesDiagnosticSettings()
+
+#     if overwrite is None:
+#         overwrite = config.data_src.overwrite
+
+#     subjects = list(subjects)
+#     sessions = list(sessions)
+
+#     if not subjects:
+#         raise ValueError("subjects cannot be empty.")
+
+#     if not sessions:
+#         raise ValueError("sessions cannot be empty.")
+
+#     if settings.window_duration_s <= 0:
+#         raise ValueError("window_duration_s must be positive.")
+
+#     if settings.psd_fmin < 0:
+#         raise ValueError("psd_fmin must be non-negative.")
+
+#     if settings.psd_fmax <= settings.psd_fmin:
+#         raise ValueError("psd_fmax must be greater than psd_fmin.")
+
+#     outdir = pathlib.Path(config.data_src.outdir)
+#     outdir.mkdir(parents=True, exist_ok=True)
+
+#     output_path = outdir / output_name
+
+#     if output_path.exists() and not overwrite:
+#         raise FileExistsError(
+#             f"Output exists and overwrite=False: {output_path}"
+#         )
+
+#     # This makes `ica.plot_sources()` return a standard Matplotlib Figure,
+#     # which can be augmented and passed directly to PdfPages.
+#     mne.viz.set_browser_backend("matplotlib")
+
+#     with PdfPages(output_path) as pdf:
+#         for sub in subjects:
+#             found_input_pair = False
+#             wrote_any_page = False
+
+#             for session in sessions:
+#                 raw_path = _ica_sources_diagnostic_raw_path(
+#                     sub=sub,
+#                     session=session,
+#                     config=config,
+#                 )
+#                 ica_path = _ica_sources_diagnostic_ica_path(
+#                     sub=sub,
+#                     session=session,
+#                     config=config,
+#                 )
+
+#                 if not raw_path.exists() or not ica_path.exists():
+#                     continue
+
+#                 # The pair exists, regardless of whether a later plotting action
+#                 # fails. This prevents the incorrect "No ... pairs found" page.
+#                 found_input_pair = True
+
+#                 raw = None
+
+#                 try:
+#                     raw = mne.io.read_raw_fif(
+#                         raw_path,
+#                         preload=True,
+#                         verbose="ERROR",
+#                     )
+
+#                     ica = mne.preprocessing.read_ica(
+#                         ica_path,
+#                         verbose="ERROR",
+#                     )
+
+#                     window_starts = _ica_sources_diagnostic_window_starts(
+#                         raw,
+#                         settings=settings,
+#                     )
+
+#                     for window_number, start_s in enumerate(
+#                         window_starts,
+#                         start=1,
+#                     ):
+#                         _ica_sources_diagnostic_save_browser_page(
+#                             pdf,
+#                             raw=raw,
+#                             ica=ica,
+#                             sub=sub,
+#                             session=session,
+#                             start_s=float(start_s),
+#                             settings=settings,
+#                             page_number=window_number,
+#                             n_windows=len(window_starts),
+#                         )
+#                         wrote_any_page = True
+
+#                     _ica_sources_diagnostic_write_psd_pages(
+#                         pdf,
+#                         raw=raw,
+#                         ica=ica,
+#                         sub=sub,
+#                         session=session,
+#                         settings=settings,
+#                     )
+#                     wrote_any_page = True
+
+#                 except Exception as error:
+#                     error_fig = plt.figure(figsize=(11, 8.5))
+
+#                     error_fig.text(
+#                         0.5,
+#                         0.63,
+#                         "ICA source diagnostic failed",
+#                         ha="center",
+#                         va="center",
+#                         fontsize=18,
+#                         fontweight="bold",
+#                         color="crimson",
+#                     )
+
+#                     error_fig.text(
+#                         0.5,
+#                         0.52,
+#                         f"Subject: {sub}\nSession: {session}",
+#                         ha="center",
+#                         va="center",
+#                         fontsize=12,
+#                     )
+
+#                     error_fig.text(
+#                         0.5,
+#                         0.34,
+#                         f"{type(error).__name__}: {error}\n\n"
+#                         f"Raw path:\n{raw_path}\n\n"
+#                         f"ICA path:\n{ica_path}",
+#                         ha="center",
+#                         va="center",
+#                         fontsize=9,
+#                         wrap=True,
+#                     )
+
+#                     pdf.savefig(error_fig)
+#                     plt.close(error_fig)
+#                     wrote_any_page = True
+
+#                 finally:
+#                     if raw is not None:
+#                         raw.close()
+
+#             if not found_input_pair:
+#                 missing_fig = plt.figure(figsize=(11, 8.5))
+
+#                 missing_fig.text(
+#                     0.5,
+#                     0.60,
+#                     f"No ICA raw/solution pairs found for {sub}",
+#                     ha="center",
+#                     va="center",
+#                     fontsize=18,
+#                     fontweight="bold",
+#                 )
+
+#                 missing_fig.text(
+#                     0.5,
+#                     0.43,
+#                     f"Requested sessions: {', '.join(sessions)}",
+#                     ha="center",
+#                     va="center",
+#                     fontsize=11,
+#                 )
+
+#                 pdf.savefig(missing_fig)
+#                 plt.close(missing_fig)
+
+#     return output_path
+
+
+################################################################################
+# ICA components QC
+################################################################################
+
 @dataclass(frozen=True)
 class ICASourcesDiagnosticSettings:
-    """Layout settings for ICA source-browser and spectral QC."""
+    """Layout settings for ICA source-browser, spectral, and topography QC."""
+
+    # Source-browser window selection.
     window_duration_s: float = 20.0
     n_windows_per_session: int = 4
 
     # "even" gives representative session coverage.
-    # "manual" uses `window_starts_s` exactly.
+    # "manual" uses window_starts_s exactly.
     window_selection: str = "even"
     window_starts_s: Optional[tuple[float, ...]] = None
 
@@ -1951,6 +2606,23 @@ class ICASourcesDiagnosticSettings:
     psd_color_rejected: str = "crimson"
     psd_linewidth: float = 0.7
 
+    # ICA topography pages.
+    #
+    # MNE itself decides the exact panel grid for plot_components(), but this
+    # controls how many component maps are sent to each PDF page.
+    topomap_figsize: tuple[float, float] = (16, 10)
+    topomap_max_components_per_page: int = 20
+    topomap_ch_type: Optional[str] = None
+    topomap_res: int = 64
+    topomap_cmap: str = "RdBu_r"
+    topomap_contours: int = 6
+    topomap_sensors: bool = True
+    topomap_colorbar: bool = False
+    topomap_show_names: bool = False
+    topomap_rejected_color: str = "crimson"
+    topomap_retained_color: str = "black"
+
+
 def _ica_sources_diagnostic_stem(
     sub: str,
     session: str,
@@ -1959,7 +2631,6 @@ def _ica_sources_diagnostic_stem(
     """Build the shared raw/ICA filename stem."""
     l_filt = config.filter_params.wideband_lower_bandlimit
     h_filt = config.filter_params.wideband_upper_bandlimit
-
     return f"{sub}_tsss-{l_filt}-{h_filt}-{session}"
 
 
@@ -1970,7 +2641,6 @@ def _ica_sources_diagnostic_raw_path(
 ) -> pathlib.Path:
     """Path to the tSSS raw file directly preceding ICA application."""
     stem = _ica_sources_diagnostic_stem(sub, session, config)
-
     return (
         pathlib.Path(config.data_src.megdir)
         / sub
@@ -1983,9 +2653,8 @@ def _ica_sources_diagnostic_ica_path(
     session: str,
     config,
 ) -> pathlib.Path:
-    """Path to the ICA object saved by `ica.save()`."""
+    """Path to the ICA object saved by ica.save()."""
     stem = _ica_sources_diagnostic_stem(sub, session, config)
-
     return (
         pathlib.Path(config.data_src.megdir)
         / sub
@@ -1998,7 +2667,7 @@ def _ica_sources_diagnostic_window_starts(
     *,
     settings: ICASourcesDiagnosticSettings,
 ) -> np.ndarray:
-    """Choose valid 20-second starts from a session-level raw recording."""
+    """Choose valid source-browser window starts from a raw recording."""
     raw_start_s = float(raw.times[0])
     raw_stop_s = float(raw.times[-1])
 
@@ -2042,6 +2711,7 @@ def _ica_sources_diagnostic_window_starts(
         dtype=float,
     )
 
+
 def _ica_sources_diagnostic_save_browser_page(
     pdf: PdfPages,
     *,
@@ -2057,9 +2727,9 @@ def _ica_sources_diagnostic_save_browser_page(
     """
     Save one MNE ICA source-browser view to the report PDF.
 
-    MNE handles ICA source traces, exclusions, annotations, and scrolling.
-    Do not pass `picks` here: with some MNE versions, explicitly passing
-    component indices can trigger ICA plot_sources indexing errors.
+    MNE handles source traces, exclusions, annotations, and scrolling.
+    Do not pass picks here: some MNE versions can raise ICA plot_sources
+    indexing errors when component indices are explicitly supplied.
     """
     raw_start_s = float(raw.times[0])
     raw_stop_s = float(raw.times[-1])
@@ -2077,8 +2747,11 @@ def _ica_sources_diagnostic_save_browser_page(
         show=False,
     )
 
-    # MNE may set/re-set its axes title internally. Figure-level text is
-    # independent of that title and will be included in the PDF.
+    fig.set_size_inches(
+        settings.source_figsize,
+        forward=True,
+    )
+
     fig.text(
         0.5,
         0.985,
@@ -2104,8 +2777,7 @@ def _ica_sources_diagnostic_save_browser_page(
         fontsize=8,
     )
 
-    # Important: use a large enough bottom margin that the metadata footer
-    # does not cover MNE's source-browser scroll/navigation controls.
+    # Keep metadata clear of source-browser controls.
     fig.subplots_adjust(
         top=0.94,
         bottom=0.11,
@@ -2114,6 +2786,7 @@ def _ica_sources_diagnostic_save_browser_page(
     pdf.savefig(fig)
     plt.close(fig)
 
+
 def _ica_sources_diagnostic_component_index(
     channel_name: str,
 ) -> int:
@@ -2121,11 +2794,11 @@ def _ica_sources_diagnostic_component_index(
     Extract an ICA component index from an MNE ICA source channel name.
 
     Supported examples:
-    - "ICA000"  -> 0
-    - "ICA017"  -> 17
+    - "ICA000" -> 0
+    - "ICA017" -> 17
     - "ICA 000" -> 0
     - "ICA 017" -> 17
-    - "IC_17"   -> 17
+    - "IC_17" -> 17
     - "component-17" -> 17
     """
     match = re.search(
@@ -2140,8 +2813,27 @@ def _ica_sources_diagnostic_component_index(
         )
 
     return int(match.group(1))
-    
-    
+
+
+def _ica_sources_diagnostic_component_indices(
+    ica: mne.preprocessing.ICA,
+) -> list[int]:
+    """
+    Return all ICA component indices in display order.
+
+    n_components_ is normally an int. The fallback handles ICA objects
+    whose n_components_ is represented as a NumPy integer-like value.
+    """
+    n_components = int(ica.n_components_)
+
+    if n_components <= 0:
+        raise RuntimeError(
+            "ICA object reports no components."
+        )
+
+    return list(range(n_components))
+
+
 def _ica_sources_diagnostic_write_psd_pages(
     pdf: PdfPages,
     *,
@@ -2156,11 +2848,9 @@ def _ica_sources_diagnostic_write_psd_pages(
 
     Rejected components are red and retained components are black.
 
-    Important:
-    - ICA source channels are picked explicitly.
-    - `exclude=[]` is passed to both compute_psd() and get_data() so source
-      channels marked bad cannot silently disappear and desynchronize PSD-row
-      order from the source-channel list.
+    ICA source channels are picked explicitly. exclude=[] is passed to
+    compute_psd() and get_data() so source channels marked bad cannot
+    silently disappear and desynchronize PSD rows from source names.
     """
     source_raw = ica.get_sources(raw)
 
@@ -2222,7 +2912,7 @@ def _ica_sources_diagnostic_write_psd_pages(
         for component in ica.exclude
     }
 
-    # PSD row index is intentionally separate from ICA component index.
+    # The PSD row index is intentionally independent of the ICA component ID.
     component_rows = [
         (
             psd_row,
@@ -2242,13 +2932,16 @@ def _ica_sources_diagnostic_write_psd_pages(
     n_rows = int(
         np.ceil(components_per_page / n_cols)
     )
-
     n_pages = int(
         np.ceil(len(component_rows) / components_per_page)
     )
 
     for page_number, start_index in enumerate(
-        range(0, len(component_rows), components_per_page),
+        range(
+            0,
+            len(component_rows),
+            components_per_page,
+        ),
         start=1,
     ):
         page_rows = component_rows[
@@ -2304,10 +2997,12 @@ def _ica_sources_diagnostic_write_psd_pages(
                 settings.psd_fmin,
                 settings.psd_fmax,
             )
+
             ax.grid(
                 color="0.88",
                 linewidth=0.5,
             )
+
             ax.tick_params(
                 axis="both",
                 labelsize=6,
@@ -2370,6 +3065,216 @@ def _ica_sources_diagnostic_write_psd_pages(
         pdf.savefig(fig)
         plt.close(fig)
 
+
+def _ica_sources_diagnostic_topomap_axes(
+    fig: plt.Figure,
+) -> list[plt.Axes]:
+    """
+    Return axes likely to contain ICA component topographies.
+
+    MNE plot_components() can create extra axes for colorbars or figure
+    decoration. Topomap axes typically contain one or more image/contour
+    artists, while colorbar axes are excluded by their label.
+    """
+    topomap_axes: list[plt.Axes] = []
+
+    for ax in fig.axes:
+        if ax.get_label() == "<colorbar>":
+            continue
+
+        if ax.images or ax.collections:
+            topomap_axes.append(ax)
+
+    return topomap_axes
+
+
+def _ica_sources_diagnostic_add_topomap_status_labels(
+    fig: plt.Figure,
+    *,
+    component_indices: list[int],
+    rejected_components: set[int],
+    settings: ICASourcesDiagnosticSettings,
+) -> None:
+    """
+    Add retained/rejected labels and rejected-component frames to topomaps.
+
+    MNE supplies the maps and component titles. This helper augments them
+    for a static PDF export without depending on MNE private APIs.
+    """
+    topomap_axes = _ica_sources_diagnostic_topomap_axes(fig)
+
+    for ax, component_index in zip(
+        topomap_axes,
+        component_indices,
+    ):
+        is_rejected = component_index in rejected_components
+
+        status = (
+            "rejected"
+            if is_rejected
+            else "retained"
+        )
+
+        color = (
+            settings.topomap_rejected_color
+            if is_rejected
+            else settings.topomap_retained_color
+        )
+
+        ax.set_title(
+            f"IC {component_index}: {status}",
+            fontsize=9,
+            color=color,
+            pad=5,
+        )
+
+        if is_rejected:
+            border = Rectangle(
+                (0.01, 0.01),
+                0.98,
+                0.98,
+                transform=ax.transAxes,
+                fill=False,
+                edgecolor=settings.topomap_rejected_color,
+                linewidth=2.0,
+                clip_on=False,
+                zorder=20,
+            )
+            ax.add_patch(border)
+
+
+def _ica_sources_diagnostic_write_topomap_pages(
+    pdf: PdfPages,
+    *,
+    raw: mne.io.BaseRaw,
+    ica: mne.preprocessing.ICA,
+    sub: str,
+    session: str,
+    settings: ICASourcesDiagnosticSettings,
+) -> None:
+    """
+    Write paginated ICA component topography pages.
+
+    Each page presents ICA mixing-pattern topomaps for a subset of
+    components. Rejected components receive a crimson title and frame;
+    retained components receive black titles. MNE handles channel layouts,
+    sensor positions, field maps, and MEG/EEG topography interpolation.
+    """
+    component_indices = _ica_sources_diagnostic_component_indices(ica)
+
+    components_per_page = max(
+        1,
+        settings.topomap_max_components_per_page,
+    )
+
+    rejected_components = {
+        int(component)
+        for component in ica.exclude
+    }
+
+    n_pages = int(
+        np.ceil(
+            len(component_indices) / components_per_page
+        )
+    )
+
+    for page_number, start_index in enumerate(
+        range(
+            0,
+            len(component_indices),
+            components_per_page,
+        ),
+        start=1,
+    ):
+        page_component_indices = component_indices[
+            start_index:start_index + components_per_page
+        ]
+
+        figures = ica.plot_components(
+            picks=page_component_indices,
+            ch_type=settings.topomap_ch_type,
+            inst=raw,
+            res=settings.topomap_res,
+            cmap=settings.topomap_cmap,
+            contours=settings.topomap_contours,
+            sensors=settings.topomap_sensors,
+            show_names=settings.topomap_show_names,
+            colorbar=settings.topomap_colorbar,
+            show=False,
+        )
+
+        # MNE versions differ: plot_components can return a single Figure
+        # or a list of Figures. Normalize to a list for PDF export.
+        if isinstance(figures, plt.Figure):
+            figures_to_save = [figures]
+        else:
+            figures_to_save = list(figures)
+
+        if not figures_to_save:
+            raise RuntimeError(
+                "MNE ICA plot_components() returned no figures."
+            )
+
+        # Normally one call produces one page because picks are already
+        # chunked. If an MNE version makes multiple figures, each is still
+        # exported safely and labeled with its own subpage count.
+        for subpage_number, fig in enumerate(
+            figures_to_save,
+            start=1,
+        ):
+            fig.set_size_inches(
+                settings.topomap_figsize,
+                forward=True,
+            )
+
+            _ica_sources_diagnostic_add_topomap_status_labels(
+                fig,
+                component_indices=page_component_indices,
+                rejected_components=rejected_components,
+                settings=settings,
+            )
+
+            page_suffix = (
+                f"{page_number}/{n_pages}"
+                if len(figures_to_save) == 1
+                else (
+                    f"{page_number}/{n_pages}, "
+                    f"figure {subpage_number}/{len(figures_to_save)}"
+                )
+            )
+
+            fig.suptitle(
+                f"ICA component topographies | Subject: {sub} | "
+                f"Session: {session} | Topomap page {page_suffix}",
+                fontsize=15,
+                fontweight="bold",
+                y=0.985,
+            )
+
+            fig.text(
+                0.5,
+                0.008,
+                f"Components on this page: {page_component_indices} | "
+                f"Rejected/red frame: "
+                f"{sorted(set(page_component_indices) & rejected_components) or 'none'} | "
+                f"Retained/black: all others | "
+                f"Topographies show ICA mixing patterns projected to sensors.",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+            fig.subplots_adjust(
+                left=0.03,
+                right=0.97,
+                top=0.91,
+                bottom=0.07,
+            )
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+
 def make_ica_sources_diagnostic_pdf(
     subjects: Iterable[str],
     sessions: Iterable[str],
@@ -2382,18 +3287,22 @@ def make_ica_sources_diagnostic_pdf(
     """
     Create a multipage ICA diagnostic PDF.
 
-    For each available subject/session pair, writes:
+    For each available subject/session pair, the report writes:
 
     1. Several MNE ICA-source browser pages covering windows distributed
-       through the complete raw session. MNE displays the raw annotations
-       and component rejection status.
+       across the complete raw session. MNE displays annotations and source
+       rejection status.
 
-    2. One or more session-level Welch PSD grid pages showing all ICA
-       components. Rejected components are red; retained components black.
+    2. One or more session-level Welch PSD grid pages for all components.
+       Rejected components are red and retained components are black.
 
-    The report adds subject, session, exact session-time interval, actual
-    duration, recording range, rejected-component list, component index
-    range, and PSD settings to the exported pages.
+    3. One or more ICA component topography pages. These show each
+       component's spatial mixing pattern at the sensors. Rejected
+       components are marked with crimson labels and frames.
+
+    The report adds subject/session metadata, exact session-time intervals,
+    actual window durations, recording range, rejected-component list,
+    component IDs, PSD settings, and topomap status to the exported pages.
     """
     if settings is None:
         settings = ICASourcesDiagnosticSettings()
@@ -2417,10 +3326,33 @@ def make_ica_sources_diagnostic_pdf(
         raise ValueError("psd_fmin must be non-negative.")
 
     if settings.psd_fmax <= settings.psd_fmin:
-        raise ValueError("psd_fmax must be greater than psd_fmin.")
+        raise ValueError(
+            "psd_fmax must be greater than psd_fmin."
+        )
+
+    if settings.psd_n_fft <= 0:
+        raise ValueError("psd_n_fft must be positive.")
+
+    if settings.psd_max_components_per_page <= 0:
+        raise ValueError(
+            "psd_max_components_per_page must be positive."
+        )
+
+    if settings.topomap_max_components_per_page <= 0:
+        raise ValueError(
+            "topomap_max_components_per_page must be positive."
+        )
+
+    if settings.topomap_res <= 0:
+        raise ValueError(
+            "topomap_res must be positive."
+        )
 
     outdir = pathlib.Path(config.data_src.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     output_path = outdir / output_name
 
@@ -2429,14 +3361,13 @@ def make_ica_sources_diagnostic_pdf(
             f"Output exists and overwrite=False: {output_path}"
         )
 
-    # This makes `ica.plot_sources()` return a standard Matplotlib Figure,
-    # which can be augmented and passed directly to PdfPages.
+    # This makes ica.plot_sources() return a Matplotlib Figure that can
+    # be augmented and passed to PdfPages.
     mne.viz.set_browser_backend("matplotlib")
 
     with PdfPages(output_path) as pdf:
         for sub in subjects:
             found_input_pair = False
-            wrote_any_page = False
 
             for session in sessions:
                 raw_path = _ica_sources_diagnostic_raw_path(
@@ -2444,6 +3375,7 @@ def make_ica_sources_diagnostic_pdf(
                     session=session,
                     config=config,
                 )
+
                 ica_path = _ica_sources_diagnostic_ica_path(
                     sub=sub,
                     session=session,
@@ -2453,11 +3385,10 @@ def make_ica_sources_diagnostic_pdf(
                 if not raw_path.exists() or not ica_path.exists():
                     continue
 
-                # The pair exists, regardless of whether a later plotting action
-                # fails. This prevents the incorrect "No ... pairs found" page.
+                # The pair exists even if a plotting stage subsequently
+                # fails, preventing a misleading "No pairs found" page.
                 found_input_pair = True
-
-                raw = None
+                raw: Optional[mne.io.BaseRaw] = None
 
                 try:
                     raw = mne.io.read_raw_fif(
@@ -2471,9 +3402,11 @@ def make_ica_sources_diagnostic_pdf(
                         verbose="ERROR",
                     )
 
-                    window_starts = _ica_sources_diagnostic_window_starts(
-                        raw,
-                        settings=settings,
+                    window_starts = (
+                        _ica_sources_diagnostic_window_starts(
+                            raw,
+                            settings=settings,
+                        )
                     )
 
                     for window_number, start_s in enumerate(
@@ -2491,7 +3424,6 @@ def make_ica_sources_diagnostic_pdf(
                             page_number=window_number,
                             n_windows=len(window_starts),
                         )
-                        wrote_any_page = True
 
                     _ica_sources_diagnostic_write_psd_pages(
                         pdf,
@@ -2501,10 +3433,20 @@ def make_ica_sources_diagnostic_pdf(
                         session=session,
                         settings=settings,
                     )
-                    wrote_any_page = True
+
+                    _ica_sources_diagnostic_write_topomap_pages(
+                        pdf,
+                        raw=raw,
+                        ica=ica,
+                        sub=sub,
+                        session=session,
+                        settings=settings,
+                    )
 
                 except Exception as error:
-                    error_fig = plt.figure(figsize=(11, 8.5))
+                    error_fig = plt.figure(
+                        figsize=(11, 8.5)
+                    )
 
                     error_fig.text(
                         0.5,
@@ -2540,14 +3482,15 @@ def make_ica_sources_diagnostic_pdf(
 
                     pdf.savefig(error_fig)
                     plt.close(error_fig)
-                    wrote_any_page = True
 
                 finally:
                     if raw is not None:
                         raw.close()
 
             if not found_input_pair:
-                missing_fig = plt.figure(figsize=(11, 8.5))
+                missing_fig = plt.figure(
+                    figsize=(11, 8.5)
+                )
 
                 missing_fig.text(
                     0.5,
@@ -2573,7 +3516,6 @@ def make_ica_sources_diagnostic_pdf(
 
     return output_path
 
-
 ################################################################################
 # Leadfield QC
 ################################################################################
@@ -2584,7 +3526,7 @@ class NLGCLeadfieldQCSettings:
 
     # Filename identifiers, without brackets.
     band_label: str = "1-10Hz"
-    target_src_label: str = "vol18"
+    target_src_label: str = "ico1"
     forward_src_label: str = "vol5"
 
     # Display-only resampling of trial evoked data.
@@ -2694,10 +3636,7 @@ def _nlgc_qc_ica_path(
     )
 
 def _nlgc_qc_adjusted_rank(
-    evoked: mne.Evoked,
-    ica: Optional[mne.preprocessing.ICA],
-    *,
-    subtract_excluded: bool,
+    cov: Any,
 ) -> tuple[dict, dict]:
     """
     Compute rank from evoked info and optionally subtract ICA exclusions.
@@ -2710,40 +3649,10 @@ def _nlgc_qc_adjusted_rank(
     adjusted_rank
         Rank dictionary passed to leadfield preparation.
     """
-    raw_rank = mne.compute_rank(
-        evoked,
-        rank="info",
-        verbose="ERROR",
-    )
-    adjusted_rank = dict(raw_rank)
+    decr = int((np.linalg.eigvals(cov['data']) < 1e-28).sum())
+    rank_to_use = int(cov['data'].shape[0] - decr)
 
-    if not subtract_excluded or ica is None:
-        return raw_rank, adjusted_rank
-
-    n_excluded = len(ica.exclude)
-
-    # Your original code expects a magnetometer-only key. This version
-    # handles common MNE rank-key variants more defensively.
-    meg_keys = [
-        key
-        for key in adjusted_rank
-        if key in {"meg", "mag", "grad"}
-    ]
-
-    if len(meg_keys) == 1:
-        meg_key = meg_keys[0]
-        adjusted_rank[meg_key] = max(
-            1,
-            adjusted_rank[meg_key] - n_excluded,
-        )
-
-    elif "meg" in adjusted_rank:
-        adjusted_rank["meg"] = max(
-            1,
-            adjusted_rank["meg"] - n_excluded,
-        )
-
-    return raw_rank, adjusted_rank
+    return {"mag": rank_to_use + decr}, {"mag": rank_to_use}
 
 
 def _nlgc_qc_even_indices(
@@ -2822,9 +3731,7 @@ def _nlgc_qc_prepare_trial(
         )
 
     raw_rank, adjusted_rank = _nlgc_qc_adjusted_rank(
-        evoked,
-        ica,
-        subtract_excluded=settings.subtract_excluded_ica_components,
+        cov,
     )
 
     prepare_rank = (
